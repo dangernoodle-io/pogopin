@@ -147,6 +147,8 @@ func handleSyncError(err error) *mcp.CallToolResult {
 	return nil
 }
 
+var bootCaptureWait = time.Sleep
+
 // captureBootOutput waits for boot output to accumulate then reads it from the session's manager.
 // Returns nil if sess is nil, mgr is nil, or bootWait is <= 0.
 func captureBootOutput(sess *session.PortSession, bootWait float64) []string {
@@ -157,6 +159,6 @@ func captureBootOutput(sess *session.PortSession, bootWait float64) []string {
 	if mgr == nil {
 		return nil
 	}
-	time.Sleep(time.Duration(bootWait * float64(time.Second)))
+	bootCaptureWait(time.Duration(bootWait * float64(time.Second)))
 	return mgr.Read(100)
 }
