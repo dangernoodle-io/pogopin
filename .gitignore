@@ -2,3 +2,6 @@ breadboard
 coverage.out
 *.out
 .DS_Store
+.firmware/build/
+.firmware/sdkconfig
+.firmware/sdkconfig.old

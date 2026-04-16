@@ -68,3 +68,7 @@ make install  # go install .
 **No plugin version field**: `plugin/.claude-plugin/plugin.json` intentionally omits `version`. When absent, Claude Code keys its plugin cache on the source commit sha, so changing the `marketplace.json` ref to a new tag automatically invalidates the cache — no lockstep bump required. Release automation only needs to update the marketplace ref.
 
 **Local dev**: from a clone of `dangernoodle-marketplace`, run `.scripts/plugin-dev.sh link breadboard-mcp` to symlink the plugin cache dir to this working tree.
+
+## Test firmware
+
+`.firmware/` contains a minimal ESP32-S3 firmware (ESP-IDF) for hardware testing. Build on demand — binaries are gitignored. See `.firmware/README.md` for build instructions, flash offsets, NVS test entries, and manual test plan.
