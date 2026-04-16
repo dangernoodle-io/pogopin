@@ -64,6 +64,7 @@ make install  # go install .
 - `plugin/.claude-plugin/plugin.json` — manifest; `mcpServers.breadboard.command` points at `${CLAUDE_PLUGIN_DATA}/bin/breadboard server`
 - `plugin/hooks/hooks.json` — `SessionStart` hook running `scripts/install.sh` to fetch the release binary
 - `plugin/scripts/install.sh` — downloads the GitHub release archive, verifies SHA256, installs to plugin data dir
+- `plugin/scripts/statusline.js` — Node.js widget for ccstatusline custom-command that renders serial port state from `~/.cache/breadboard/status.json`
 
 **No plugin version field**: `plugin/.claude-plugin/plugin.json` intentionally omits `version`. When absent, Claude Code keys its plugin cache on the source commit sha, so changing the `marketplace.json` ref to a new tag automatically invalidates the cache — no lockstep bump required. Release automation only needs to update the marketplace ref.
 
