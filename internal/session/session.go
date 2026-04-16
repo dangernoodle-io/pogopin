@@ -9,6 +9,7 @@ import (
 
 	"dangernoodle.io/breadboard/internal/esp"
 	"dangernoodle.io/breadboard/internal/serial"
+	"dangernoodle.io/breadboard/internal/status"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 
@@ -48,6 +49,47 @@ var (
 	deferredRestartTimeout = 5 * time.Second
 	syncRetryDelay         = 1 * time.Second
 )
+
+// snapshotPorts builds a status.PortState slice from the current ports map.
+// Caller MUST hold portsMu.
+func snapshotPorts() []status.PortState {
+	out := make([]status.PortState, 0, len(ports))
+	for p, s := range ports {
+		out = append(out, portStateFor(p, s))
+	}
+	return out
+}
+
+func portStateFor(p string, s *PortSession) status.PortState {
+	var lastErr *string
+	if e := s.mgr.LastError(); e != nil {
+		errStr := e.Error()
+		lastErr = &errStr
+	}
+	return status.PortState{
+		Port:         p,
+		Baud:         s.mgr.Baud(),
+		Mode:         modeString(s.mode),
+		BufferLines:  s.mgr.BufferCount(),
+		Running:      s.mgr.IsRunning(),
+		Reconnecting: s.mgr.IsReconnecting(),
+		LastError:    lastErr,
+	}
+}
+
+func modeString(m PortMode) string {
+	switch m {
+	case ModeReader:
+		return "reader"
+	case ModeFlasher:
+		return "flasher"
+	case ModeExternal:
+		return "external"
+	case ModePending:
+		return "pending"
+	}
+	return "unknown"
+}
 
 // retryFlasherCreate retries flasher creation on sync failure.
 // USB ports get up to 3 retries with 1s delays (device may still be re-enumerating).
@@ -141,7 +183,11 @@ func WaitForPort(port string, timeout time.Duration) string {
 // it returns a real flasher from newFlasherFactory.
 func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	sess, exists := ports[port]
 	if exists {
@@ -212,7 +258,6 @@ func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
 // expireSession is called when a deferred session timer expires. It restarts the reader or cleans up.
 func expireSession(sess *PortSession, port string) {
 	portsMu.Lock()
-	defer portsMu.Unlock()
 
 	// Reset and close cached flasher. The device is in bootloader/stub mode
 	// (BorrowedFlasher always caches via onReturn). Reset() returns it to
@@ -232,6 +277,9 @@ func expireSession(sess *PortSession, port string) {
 	// Another goroutine may have acquired the session while we waited
 	// (e.g. AcquireForFlasher set ModeFlasher). Don't interfere.
 	if sess.mode != ModePending {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
 		return
 	}
 
@@ -245,18 +293,28 @@ func expireSession(sess *PortSession, port string) {
 				delete(ports, port)
 				ports[foundPort] = sess
 			}
+			snap := snapshotPorts()
+			portsMu.Unlock()
+			status.Write(snap)
 			return
 		}
 	}
 
 	// Could not restart, delete session
 	delete(ports, port)
+	snap := snapshotPorts()
+	portsMu.Unlock()
+	status.Write(snap)
 }
 
 // ReleaseFlasherDeferred schedules a deferred restart via timer. Used by async handlers.
 func ReleaseFlasherDeferred(sess *PortSession, port string) {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	sess.mode = ModePending
 	sess.timer = time.AfterFunc(deferredRestartTimeout, func() {
@@ -283,7 +341,11 @@ func ReleaseFlasherImmediate(sess *PortSession, port string) string {
 	}
 
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	err := sess.mgr.Start(foundPort, sess.baud)
 	if err != nil {
@@ -307,7 +369,11 @@ func ReleaseFlasherImmediate(sess *PortSession, port string) string {
 // AcquireForExternal prepares a port for an external command. Returns the session.
 func AcquireForExternal(port string) *PortSession {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	sess, exists := ports[port]
 	if exists {
@@ -349,7 +415,11 @@ func ReleaseExternal(sess *PortSession, port string) string {
 	}
 
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	err := sess.mgr.Start(foundPort, sess.baud)
 	if err != nil {
@@ -374,7 +444,6 @@ func ReleaseExternal(sess *PortSession, port string) string {
 // Returns the manager, port name, and error. Takes lock internally.
 func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error) {
 	portsMu.Lock()
-	defer portsMu.Unlock()
 
 	port, _ := args["port"].(string)
 
@@ -386,11 +455,17 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 		var ok bool
 		sess, ok = ports[port]
 		if !ok {
+			snap := snapshotPorts()
+			portsMu.Unlock()
+			status.Write(snap)
 			return nil, port, fmt.Errorf("no serial port open for %s; call serial_start first", port)
 		}
 		resolvedPort = port
 	} else {
 		if len(ports) == 0 {
+			snap := snapshotPorts()
+			portsMu.Unlock()
+			status.Write(snap)
 			return nil, "", fmt.Errorf("no serial port open; call serial_start first")
 		}
 		if len(ports) == 1 {
@@ -404,6 +479,9 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 			for p := range ports {
 				names = append(names, p)
 			}
+			snap := snapshotPorts()
+			portsMu.Unlock()
+			status.Write(snap)
 			return nil, "", fmt.Errorf("multiple ports open (%v); specify port parameter", names)
 		}
 	}
@@ -439,16 +517,26 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 	// Check if manager is dead
 	if !sess.mgr.IsRunning() && !sess.mgr.IsReconnecting() && sess.mgr.BufferCount() == 0 {
 		delete(ports, resolvedPort)
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
 		return nil, resolvedPort, fmt.Errorf("serial reader for %s has stopped; call serial_start to reconnect", resolvedPort)
 	}
 
+	snap := snapshotPorts()
+	portsMu.Unlock()
+	status.Write(snap)
 	return sess.mgr, resolvedPort, nil
 }
 
 // StartSession opens a port and begins reading. Takes lock internally.
 func StartSession(port string, baud int, bufSize int) error {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	sess, exists := ports[port]
 	if exists {
@@ -483,7 +571,11 @@ func StartSession(port string, baud int, bufSize int) error {
 // StopSession closes a port and removes it from management. Takes lock internally.
 func StopSession(port string) error {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	sess, exists := ports[port]
 	if !exists {
@@ -513,7 +605,11 @@ func StopSession(port string) error {
 // CleanupAllSessions stops all managed ports. Used by signal handler.
 func CleanupAllSessions() {
 	portsMu.Lock()
-	defer portsMu.Unlock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
 
 	for port, sess := range ports {
 		if sess.timer != nil {
@@ -542,26 +638,9 @@ func PortCount() int {
 	return len(ports)
 }
 
-// AllPortStatus returns status for all active ports as a map.
-func AllPortStatus() map[string]interface{} {
+// AllPortStates returns the current state of all open ports for status/MCP consumers.
+func AllPortStates() []status.PortState {
 	portsMu.Lock()
 	defer portsMu.Unlock()
-
-	allStatus := map[string]interface{}{}
-	for name, sess := range ports {
-		m := sess.mgr
-		status := map[string]interface{}{
-			"running":      m.IsRunning(),
-			"port":         m.PortName(),
-			"baud":         m.Baud(),
-			"buffer_lines": m.BufferCount(),
-			"reconnecting": m.IsReconnecting(),
-			"last_error":   nil,
-		}
-		if lastErr := m.LastError(); lastErr != nil {
-			status["last_error"] = lastErr.Error()
-		}
-		allStatus[name] = status
-	}
-	return allStatus
+	return snapshotPorts()
 }

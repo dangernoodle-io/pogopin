@@ -255,9 +255,9 @@ func handleSerialStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	count := session.PortCount()
 
 	if port == "" && count > 1 {
-		allStatus := session.AllPortStatus()
+		portStates := session.AllPortStates()
 
-		data, err := json.MarshalIndent(map[string]interface{}{"ports": allStatus}, "", "  ")
+		data, err := json.MarshalIndent(map[string]interface{}{"ports": portStates}, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

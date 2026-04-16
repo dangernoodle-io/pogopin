@@ -1,6 +1,11 @@
 package mcpserver
 
 import (
+	"context"
+	"time"
+
+	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/breadboard/internal/status"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -15,14 +20,31 @@ Always serial_stop before esp_* operations on the same port.`
 
 // Serve starts the MCP server.
 func Serve() error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	s := server.NewMCPServer("breadboard", "0.1.0",
 		server.WithToolCapabilities(true),
 		server.WithInstructions(instructions),
 	)
 
 	registerTools(s)
+	go runHeartbeat(ctx, 15*time.Second)
 
 	return server.ServeStdio(s)
+}
+
+func runHeartbeat(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			status.Write(session.AllPortStates())
+		}
+	}
 }
 
 // registerTools registers all MCP tools.
