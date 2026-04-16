@@ -1,0 +1,13 @@
+name: build
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - 'README.md'
+
+jobs:
+  verify:
+    uses: dangernoodle-io/.github/.github/workflows/go-build.yml@main
+    secrets: inherit

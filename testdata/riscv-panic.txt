@@ -1,0 +1,5 @@
+Guru Meditation Error: Core 0 panic'ed (StoreProhibited). Exception was unhandled.
+Core 0 register dump:
+MEPC    : 0x42001234  RA      : 0x42005678  SP      : 0x3fc8e000  GP      : 0x3fc8d000
+TP      : 0x00000000  T0      : 0x00000000  T1      : 0x00000000  T2      : 0x00000000
+Backtrace: 0x42001234 0x42005678 0x42009abc
