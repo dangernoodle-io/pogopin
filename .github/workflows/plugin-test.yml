@@ -8,5 +8,5 @@ on:
       - 'plugin/**'
 
 jobs:
-  plugin-tests:
+  plugin:
     uses: dangernoodle-io/.github/.github/workflows/plugin-test.yml@main
