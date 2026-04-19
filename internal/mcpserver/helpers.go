@@ -159,6 +159,7 @@ func captureBootOutput(sess *session.PortSession, bootWait float64) []string {
 	if mgr == nil {
 		return nil
 	}
+	mgr.ClearBuffer()
 	bootCaptureWait(time.Duration(bootWait * float64(time.Second)))
 	return mgr.Read(100)
 }
