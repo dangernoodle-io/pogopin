@@ -385,6 +385,7 @@ func TestParseChipTypeVariants(t *testing.T) {
 	assert.Equal(t, espflasher.ChipESP32, parseChipType("esp32"))
 	assert.Equal(t, espflasher.ChipESP32S3, parseChipType("ESP32S3"))
 	assert.Equal(t, espflasher.ChipESP32C6, parseChipType("esp32c6"))
+	assert.Equal(t, espflasher.ChipESP32P4Rev1, parseChipType("esp32p4-rev1"))
 	assert.Equal(t, espflasher.ChipESP8266, parseChipType("ESP8266"))
 }
 
