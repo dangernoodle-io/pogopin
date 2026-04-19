@@ -136,6 +136,8 @@ func parseChipType(s string) espflasher.ChipType {
 		return espflasher.ChipESP32C6
 	case "esp32h2":
 		return espflasher.ChipESP32H2
+	case "esp32p4-rev1":
+		return espflasher.ChipESP32P4Rev1
 	case "esp8266":
 		return espflasher.ChipESP8266
 	default:

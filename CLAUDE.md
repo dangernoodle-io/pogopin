@@ -73,3 +73,9 @@ make install  # go install .
 ## Test firmware
 
 `.firmware/` contains a minimal ESP32-S3 firmware (ESP-IDF) for hardware testing. Build on demand — binaries are gitignored. See `.firmware/README.md` for build instructions, flash offsets, NVS test entries, and manual test plan.
+
+### Test firmware notes
+
+- If esp_* tools behave strangely (null NVS, no boot_output, chip appears stuck in ROM bootloader, "device not in download mode"), unplug/replug the board before diagnosing code — stale USB-Serial-JTAG peripheral state is the most common cause.
+- NVS read/write through pogopin uses the ROM bootloader — the app does NOT need to be running. Only heartbeat/echo tests require app boot.
+- `CONFIG_ESP_CONSOLE_USB_CDC=y` works fine on S3 alongside pogopin ESP tools (TaipanMiner uses this config). It auto-wires stdin, so echo tests work with no extra VFS setup. Only switch to `USB_SERIAL_JTAG` if you need the JTAG interface — and then you must install the driver + `usb_serial_jtag_vfs_use_driver()` to get stdin.
