@@ -127,8 +127,8 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 BASE_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}"
-ARCHIVE_NAME="pogo_${LATEST_VERSION}_${OS}_${ARCH}.${EXT}"
-CHECKSUM_NAME="pogo_${LATEST_VERSION}_SHA256SUMS"
+ARCHIVE_NAME="pogopin_${LATEST_VERSION}_${OS}_${ARCH}.${EXT}"
+CHECKSUM_NAME="pogopin_${LATEST_VERSION}_SHA256SUMS"
 
 # Download archive and checksums.
 curl -sL --fail -o "${WORK_DIR}/${ARCHIVE_NAME}" "${BASE_URL}/${ARCHIVE_NAME}"
