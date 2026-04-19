@@ -1,4 +1,5 @@
 pogo
+.code-graph/
 coverage.out
 *.out
 .DS_Store
