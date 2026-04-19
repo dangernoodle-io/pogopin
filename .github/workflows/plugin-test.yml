@@ -1,0 +1,12 @@
+name: plugin-test
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+    paths:
+      - 'plugin/**'
+
+jobs:
+  plugin:
+    uses: dangernoodle-io/.github/.github/workflows/plugin-test.yml@main
