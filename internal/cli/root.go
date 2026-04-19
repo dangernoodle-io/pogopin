@@ -8,7 +8,7 @@ import (
 var Version string
 
 var rootCmd = &cobra.Command{
-	Use:          "breadboard",
+	Use:          "pogo",
 	Short:        "Embedded development MCP server",
 	Long:         "Embedded development MCP server — serial monitoring, ESP-IDF flashing, crash decode, and more.",
 	Version:      Version,

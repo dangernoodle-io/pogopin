@@ -1,4 +1,4 @@
-module dangernoodle.io/breadboard
+module dangernoodle.io/pogopin
 
 go 1.26.2
 

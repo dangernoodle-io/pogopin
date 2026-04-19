@@ -1,16 +1,16 @@
-# breadboard-mcp
+# pogopin-mcp
 
 Embedded development MCP server — serial monitoring, ESP-IDF flashing, ESP chip utilities, and backtrace decoding. 18 tools for firmware development workflows.
 
 ## Install
 
 ```bash
-/plugin install breadboard-mcp@dangernoodle-marketplace
+/plugin install pogopin-mcp@dangernoodle-marketplace
 ```
 
 ## What it does
 
-- **MCP server with 18 tools** for serial I/O, ESP flash operations, NVS management, and crash decoding. See the [server README](https://github.com/dangernoodle-io/breadboard) for full tool reference.
+- **MCP server with 18 tools** for serial I/O, ESP flash operations, NVS management, and crash decoding. See the [server README](https://github.com/dangernoodle-io/pogopin) for full tool reference.
 - **2 hooks auto-inject context** into prompts. SessionStart installs the binary; UserPromptSubmit detects ESP-IDF projects and reminds you to check chip info before flashing.
 
 ## Hooks
@@ -20,7 +20,7 @@ Embedded development MCP server — serial monitoring, ESP-IDF flashing, ESP chi
 
 ## Configuration
 
-- `BREADBOARD_DEV_BINARY` — path to local dev binary (bypasses GitHub download)
+- `POGOPIN_DEV_BINARY` — path to local dev binary (bypasses GitHub download)
 
 ## Features not yet in plugin
 
@@ -31,7 +31,7 @@ These will land in v0.2.0.
 
 ## Server
 
-Source and detailed docs at [github.com/dangernoodle-io/breadboard](https://github.com/dangernoodle-io/breadboard).
+Source and detailed docs at [github.com/dangernoodle-io/pogopin](https://github.com/dangernoodle-io/pogopin).
 
 ## License
 

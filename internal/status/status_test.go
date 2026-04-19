@@ -9,12 +9,12 @@ import (
 
 func TestDefaultPath(t *testing.T) {
 	path := DefaultPath()
-	if !contains(path, "breadboard/status.json") {
-		t.Errorf("DefaultPath() = %s, want path containing breadboard/status.json", path)
+	if !contains(path, "pogopin/status.json") {
+		t.Errorf("DefaultPath() = %s, want path containing pogopin/status.json", path)
 	}
-	// Should contain either Caches/.cache/breadboard/status.json (macOS/Linux) or tmp-based path
-	if !contains(path, "Caches") && !contains(path, ".cache") && !contains(path, filepath.Join(os.TempDir(), "breadboard")) {
-		t.Errorf("DefaultPath() = %s, want Caches/.cache/breadboard or tempdir-based path, got %s", path, path)
+	// Should contain either Caches/.cache/pogopin/status.json (macOS/Linux) or tmp-based path
+	if !contains(path, "Caches") && !contains(path, ".cache") && !contains(path, filepath.Join(os.TempDir(), "pogopin")) {
+		t.Errorf("DefaultPath() = %s, want Caches/.cache/pogopin or tempdir-based path, got %s", path, path)
 	}
 }
 

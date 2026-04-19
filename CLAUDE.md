@@ -1,15 +1,15 @@
-# breadboard
+# pogopin
 
 Embedded development MCP server — serial monitoring, ESP-IDF flashing, crash decode.
 
 ## Module
 
-`dangernoodle.io/breadboard`, Go 1.26.x
+`dangernoodle.io/pogopin`, Go 1.26.x
 
 ## Build
 
 ```bash
-make build    # CGO_ENABLED=0 go build -o breadboard
+make build    # CGO_ENABLED=0 go build -o pogo
 make test     # go test -race ./...
 make cover    # test + coverage summary
 make lint     # golangci-lint run
@@ -59,16 +59,16 @@ make install  # go install .
 
 ## Plugin
 
-`plugin/` contains the Claude Code plugin wrapper (breadboard-mcp) — same pattern as espidf-tools: SessionStart hook installs release binary, UserPromptSubmit hook injects ESP-IDF context.
+`plugin/` contains the Claude Code plugin wrapper (pogopin-mcp) — same pattern as espidf-tools: SessionStart hook installs release binary, UserPromptSubmit hook injects ESP-IDF context.
 
-- `plugin/.claude-plugin/plugin.json` — manifest; `mcpServers.breadboard.command` points at `${CLAUDE_PLUGIN_DATA}/bin/breadboard server`
+- `plugin/.claude-plugin/plugin.json` — manifest; `mcpServers.pogopin.command` points at `${CLAUDE_PLUGIN_DATA}/bin/pogo server`
 - `plugin/hooks/hooks.json` — `SessionStart` hook running `scripts/install.sh` to fetch the release binary
 - `plugin/scripts/install.sh` — downloads the GitHub release archive, verifies SHA256, installs to plugin data dir
-- `plugin/scripts/statusline.js` — Node.js widget for ccstatusline custom-command that renders serial port state from `~/.cache/breadboard/status.json`
+- `plugin/scripts/statusline.js` — Node.js widget for ccstatusline custom-command that renders serial port state from `~/.cache/pogopin/status.json`
 
 **No plugin version field**: `plugin/.claude-plugin/plugin.json` intentionally omits `version`. When absent, Claude Code keys its plugin cache on the source commit sha, so changing the `marketplace.json` ref to a new tag automatically invalidates the cache — no lockstep bump required. Release automation only needs to update the marketplace ref.
 
-**Local dev**: from a clone of `dangernoodle-marketplace`, run `.scripts/plugin-dev.sh link breadboard-mcp` to symlink the plugin cache dir to this working tree.
+**Local dev**: from a clone of `dangernoodle-marketplace`, run `.scripts/plugin-dev.sh link pogopin-mcp` to symlink the plugin cache dir to this working tree.
 
 ## Test firmware
 

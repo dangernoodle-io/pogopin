@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-// Mirror Go's os.UserCacheDir per-platform so the widget finds files written by breadboard.
+// Mirror Go's os.UserCacheDir per-platform so the widget finds files written by pogopin.
 function defaultCacheDir() {
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches');
   if (process.platform === 'win32') return process.env.LocalAppData || path.join(os.homedir(), 'AppData', 'Local');
@@ -12,14 +12,14 @@ function defaultCacheDir() {
 }
 
 try {
-  const statusPath = process.env.BREADBOARD_STATUS_PATH ||
-    path.join(defaultCacheDir(), 'breadboard', 'status.json');
+  const statusPath = process.env.POGOPIN_STATUS_PATH ||
+    path.join(defaultCacheDir(), 'pogopin', 'status.json');
 
   let statusFile;
   try {
     statusFile = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
   } catch (err) {
-    // No file yet — breadboard hasn't run this session
+    // No file yet — pogopin hasn't run this session
     console.log('serial: idle');
     process.exit(0);
   }

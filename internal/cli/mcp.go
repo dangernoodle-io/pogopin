@@ -3,13 +3,13 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"dangernoodle.io/breadboard/internal/mcpserver"
+	"dangernoodle.io/pogopin/internal/mcpserver"
 )
 
 var mcpCmd = &cobra.Command{
 	Use:   "server",
 	Short: "Start the MCP server",
-	Long:  "Start the MCP server providing espidf-tools capabilities over stdio.",
+	Long:  "Start the MCP server providing pogopin capabilities over stdio.",
 	RunE:  runMCPServer,
 }
 

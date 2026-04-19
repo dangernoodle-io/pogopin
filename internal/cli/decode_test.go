@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"dangernoodle.io/breadboard/internal/decode"
+	"dangernoodle.io/pogopin/internal/decode"
 )
 
 func TestReadPanicInput(t *testing.T) {

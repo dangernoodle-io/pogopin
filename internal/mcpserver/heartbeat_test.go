@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"dangernoodle.io/breadboard/internal/status"
+	"dangernoodle.io/pogopin/internal/status"
 )
 
 func TestRunHeartbeat_WritesStatusFileAndStopsOnCancel(t *testing.T) {

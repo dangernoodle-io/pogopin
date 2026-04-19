@@ -7,7 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"dangernoodle.io/breadboard/internal/decode"
+	"dangernoodle.io/pogopin/internal/decode"
 )
 
 var decodeCmd = &cobra.Command{

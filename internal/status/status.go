@@ -9,14 +9,14 @@ import (
 
 var statusFilePath = DefaultPath()
 
-// DefaultPath returns the default status file path: ~/.cache/breadboard/status.json.
+// DefaultPath returns the default status file path: ~/.cache/pogopin/status.json.
 // Falls back to os.TempDir() if UserCacheDir errors.
 func DefaultPath() string {
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "breadboard", "status.json")
+		return filepath.Join(os.TempDir(), "pogopin", "status.json")
 	}
-	return filepath.Join(cacheDir, "breadboard", "status.json")
+	return filepath.Join(cacheDir, "pogopin", "status.json")
 }
 
 // SetStatusFilePath sets the status file path for testing and returns the previous value.

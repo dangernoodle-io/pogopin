@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 	"tinygo.org/x/espflasher/pkg/nvs"
 )
