@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"dangernoodle.io/pogopin/internal/session"
@@ -28,6 +29,7 @@ func Serve() error {
 		server.WithInstructions(instructions),
 	)
 
+	setActiveServer(s)
 	registerTools(s)
 	go runHeartbeat(ctx, 15*time.Second)
 
@@ -47,9 +49,45 @@ func runHeartbeat(ctx context.Context, interval time.Duration) {
 	}
 }
 
-// registerTools registers all MCP tools.
+// registerTools registers the core tier — serial monitoring and crash decode.
+// ESP and flash tools are deferred via registerHardwareTools, triggered on
+// first serial_list or serial_start call.
 func registerTools(s *server.MCPServer) {
 	registerSerialTools(s)
-	registerESPTools(s)
 	registerDecodeTools(s)
+}
+
+// hardwareTierOnce gates lazy registration of the ESP and flash tools.
+// Reset between tests via resetHardwareTier.
+var hardwareTierOnce sync.Once
+
+// registerHardwareTools lazily registers the ESP and flash_external tools.
+// Safe to call from any handler; subsequent calls are no-ops. The mcp-go
+// server emits notifications/tools/list_changed so the client re-fetches
+// tools/list and sees the new tools.
+func registerHardwareTools(s *server.MCPServer) {
+	if s == nil {
+		return
+	}
+	hardwareTierOnce.Do(func() {
+		registerESPTools(s)
+		registerFlashExternalTool(s)
+	})
+}
+
+// activeServer holds the current MCP server for lazy registration. Set by
+// Serve; read by serial handlers when they trigger the hardware tier.
+var activeServer *server.MCPServer
+
+func setActiveServer(s *server.MCPServer) { activeServer = s }
+
+// unlockHardwareTier is called by serial_list and serial_start handlers to
+// register the hardware tier on first hardware-workflow signal.
+func unlockHardwareTier() { registerHardwareTools(activeServer) }
+
+// resetHardwareTier resets the lazy-registration gate and active server for
+// tests. Not safe for concurrent use with Serve.
+func resetHardwareTier() {
+	hardwareTierOnce = sync.Once{}
+	activeServer = nil
 }
