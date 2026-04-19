@@ -57,27 +57,50 @@ func ParsePartitionTable(data []byte) []PartitionEntry {
 	return entries
 }
 
-// ValidateFlashOffsets checks that each image offset matches a known partition.
-// Returns an error listing valid partitions if any offset doesn't match.
-func ValidateFlashOffsets(partitions []PartitionEntry, images []ImageSpec) error {
+// ValidateFlashOffsets checks that each image offset matches a known partition,
+// the partition table offset, or the provided bootloader offset. Pass
+// bootloaderOK=false to skip the bootloader check (e.g. when the chip has not
+// been detected yet).
+func ValidateFlashOffsets(partitions []PartitionEntry, images []ImageSpec, bootloaderOffset uint32, bootloaderOK bool) error {
+	fixed := []fixedOffset{{Offset: partitionTableOffset, Label: "partition-table"}}
+	if bootloaderOK {
+		fixed = append(fixed, fixedOffset{Offset: bootloaderOffset, Label: "bootloader"})
+	}
+
 	for _, img := range images {
-		matched := false
-		for _, p := range partitions {
-			if img.Offset == p.Offset {
-				matched = true
-				break
-			}
+		if offsetMatches(img.Offset, partitions, fixed) {
+			continue
 		}
-		if !matched {
-			return fmt.Errorf("offset 0x%X does not match any partition; valid partitions: %s",
-				img.Offset, formatPartitions(partitions))
-		}
+		return fmt.Errorf("offset 0x%X does not match any partition; valid offsets: %s",
+			img.Offset, formatValidOffsets(partitions, fixed))
 	}
 	return nil
 }
 
-func formatPartitions(partitions []PartitionEntry) string {
+type fixedOffset struct {
+	Offset uint32
+	Label  string
+}
+
+func offsetMatches(offset uint32, partitions []PartitionEntry, fixed []fixedOffset) bool {
+	for _, p := range partitions {
+		if offset == p.Offset {
+			return true
+		}
+	}
+	for _, f := range fixed {
+		if offset == f.Offset {
+			return true
+		}
+	}
+	return false
+}
+
+func formatValidOffsets(partitions []PartitionEntry, fixed []fixedOffset) string {
 	var parts []string
+	for _, f := range fixed {
+		parts = append(parts, fmt.Sprintf("%s @ 0x%X", f.Label, f.Offset))
+	}
 	for _, p := range partitions {
 		typeName := "data"
 		if p.Type == 0 {

@@ -7,7 +7,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.9.0
 	go.bug.st/serial v1.6.4
-	tinygo.org/x/espflasher v0.0.0-00010101000000-000000000000
+	tinygo.org/x/espflasher v0.0.0-20260419220346-b5ccbddaaff3
 )
 
 require (
@@ -24,4 +24,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace tinygo.org/x/espflasher => github.com/jgangemi/espflasher v0.0.0-20260419212035-a154805005cb
+replace tinygo.org/x/espflasher => github.com/jgangemi/espflasher v0.0.0-20260419220346-b5ccbddaaff3

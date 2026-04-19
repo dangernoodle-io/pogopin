@@ -21,6 +21,7 @@ type Flasher interface {
 	FlashID() (uint8, uint16, error)
 	ChipType() espflasher.ChipType
 	ChipName() string
+	BootloaderFlashOffset() (uint32, bool)
 	Reset()
 	Close() error
 	ReadRegister(address uint32) (uint32, error)
@@ -187,7 +188,8 @@ func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts Flas
 	if ptErr == nil {
 		partitions := ParsePartitionTable(ptData)
 		if len(partitions) > 0 {
-			if err := ValidateFlashOffsets(partitions, images); err != nil {
+			bootOffset, bootOK := f.BootloaderFlashOffset()
+			if err := ValidateFlashOffsets(partitions, images, bootOffset, bootOK); err != nil {
 				return FlashResult{}, err
 			}
 		}
