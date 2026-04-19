@@ -13,33 +13,35 @@ import (
 
 // mockFlasher implements the Flasher interface for testing.
 type mockFlasher struct {
-	flashImagesErr     error
-	eraseFlashErr      error
-	eraseRegionErr     error
-	flashIDErr         error
-	flashIDMfg         uint8
-	flashIDDev         uint16
-	chipTypVal         espflasher.ChipType
-	chipNameVal        string
-	resetCalled        bool
-	closeCalled        bool
-	flashImagesCalled  bool
-	eraseFlashCalled   bool
-	eraseRegionCalled  bool
-	eraseRegionOffset  uint32
-	eraseRegionSize    uint32
-	readRegisterErr    error
-	readRegisterVal    uint32
-	writeRegisterErr   error
-	writeRegisterAddr  uint32
-	writeRegisterVal   uint32
-	getSecurityInfoErr error
-	getSecurityInfoVal *espflasher.SecurityInfo
-	flashMD5Err        error
-	flashMD5Val        string
-	readFlashErr       error
-	readFlashVal       []byte
-	flashImagesData    []espflasher.ImagePart
+	flashImagesErr      error
+	eraseFlashErr       error
+	eraseRegionErr      error
+	flashIDErr          error
+	flashIDMfg          uint8
+	flashIDDev          uint16
+	chipTypVal          espflasher.ChipType
+	chipNameVal         string
+	bootloaderOffsetVal uint32
+	bootloaderOffsetOK  bool
+	resetCalled         bool
+	closeCalled         bool
+	flashImagesCalled   bool
+	eraseFlashCalled    bool
+	eraseRegionCalled   bool
+	eraseRegionOffset   uint32
+	eraseRegionSize     uint32
+	readRegisterErr     error
+	readRegisterVal     uint32
+	writeRegisterErr    error
+	writeRegisterAddr   uint32
+	writeRegisterVal    uint32
+	getSecurityInfoErr  error
+	getSecurityInfoVal  *espflasher.SecurityInfo
+	flashMD5Err         error
+	flashMD5Val         string
+	readFlashErr        error
+	readFlashVal        []byte
+	flashImagesData     []espflasher.ImagePart
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -70,6 +72,10 @@ func (m *mockFlasher) ChipType() espflasher.ChipType {
 
 func (m *mockFlasher) ChipName() string {
 	return m.chipNameVal
+}
+
+func (m *mockFlasher) BootloaderFlashOffset() (uint32, bool) {
+	return m.bootloaderOffsetVal, m.bootloaderOffsetOK
 }
 
 func (m *mockFlasher) Reset() {

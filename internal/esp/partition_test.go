@@ -74,7 +74,7 @@ func TestValidateFlashOffsetsValid(t *testing.T) {
 	}
 
 	images := []ImageSpec{{Path: "firmware.bin", Offset: 0x20000}}
-	err := ValidateFlashOffsets(partitions, images)
+	err := ValidateFlashOffsets(partitions, images, 0, false)
 	assert.NoError(t, err)
 }
 
@@ -85,8 +85,39 @@ func TestValidateFlashOffsetsInvalid(t *testing.T) {
 	}
 
 	images := []ImageSpec{{Path: "firmware.bin", Offset: 0x10000}}
-	err := ValidateFlashOffsets(partitions, images)
+	err := ValidateFlashOffsets(partitions, images, 0, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "0x10000")
 	assert.Contains(t, err.Error(), "ota_0")
+	assert.Contains(t, err.Error(), "partition-table @ 0x8000")
+}
+
+func TestValidateFlashOffsetsAcceptsPartitionTable(t *testing.T) {
+	partitions := []PartitionEntry{
+		{Type: 0, Offset: 0x20000, Label: "ota_0"},
+	}
+	images := []ImageSpec{{Path: "partitions.bin", Offset: 0x8000}}
+	err := ValidateFlashOffsets(partitions, images, 0, false)
+	assert.NoError(t, err)
+}
+
+func TestValidateFlashOffsetsAcceptsBootloader(t *testing.T) {
+	partitions := []PartitionEntry{
+		{Type: 0, Offset: 0x20000, Label: "ota_0"},
+	}
+	for _, bootOffset := range []uint32{0x0, 0x1000, 0x2000} {
+		images := []ImageSpec{{Path: "bootloader.bin", Offset: bootOffset}}
+		err := ValidateFlashOffsets(partitions, images, bootOffset, true)
+		assert.NoErrorf(t, err, "bootloader @ 0x%X", bootOffset)
+	}
+}
+
+func TestValidateFlashOffsetsSkipsBootloaderWhenUnknown(t *testing.T) {
+	partitions := []PartitionEntry{
+		{Type: 0, Offset: 0x20000, Label: "ota_0"},
+	}
+	// Without a known bootloader offset, 0x1000 is not accepted.
+	images := []ImageSpec{{Path: "bootloader.bin", Offset: 0x1000}}
+	err := ValidateFlashOffsets(partitions, images, 0, false)
+	require.Error(t, err)
 }
