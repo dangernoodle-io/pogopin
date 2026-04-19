@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"testing"
+	"time"
 
 	"dangernoodle.io/pogopin/internal/esp"
 	"dangernoodle.io/pogopin/internal/serial"
@@ -30,15 +31,37 @@ func TestCaptureBootOutputZeroDwell(t *testing.T) {
 }
 
 func TestCaptureBootOutputReadsLines(t *testing.T) {
-	setupFastBootCapture(t)
 	mgr := serial.NewManager()
-	mgr.AddToBuffer("boot: init")
-	mgr.AddToBuffer("boot: ready")
 	sess := session.NewPortSession(mgr, "", 0, session.ModeReader)
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		mgr.AddToBuffer("boot: init")
+		mgr.AddToBuffer("boot: ready")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
+
 	result := captureBootOutput(sess, 1.0)
 	require.Len(t, result, 2)
 	assert.Equal(t, "boot: init", result[0])
 	assert.Equal(t, "boot: ready", result[1])
+}
+
+// TestCaptureBootOutputDropsStaleLines pins the BR-14 fix: lines that accumulated
+// in the ring buffer before the ESP operation must not leak into boot_output.
+func TestCaptureBootOutputDropsStaleLines(t *testing.T) {
+	mgr := serial.NewManager()
+	mgr.AddToBuffer("pre: stale line 1")
+	mgr.AddToBuffer("pre: stale line 2")
+	sess := session.NewPortSession(mgr, "", 0, session.ModeReader)
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		mgr.AddToBuffer("boot: fresh")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
+
+	result := captureBootOutput(sess, 1.0)
+	require.Len(t, result, 1)
+	assert.Equal(t, "boot: fresh", result[0])
 }
 
 func TestHandleFlashBootCapture(t *testing.T) {
@@ -46,16 +69,19 @@ func TestHandleFlashBootCapture(t *testing.T) {
 	setupTestFlasherFactory(t)
 	setupFastWaitForPort(t)
 	setupTestListPorts(t)
-	setupFastBootCapture(t)
 
 	// Set up managed port.
 	testMgr := serial.NewManager()
 	testMgr.SetTestState(true, "/dev/ttyUSB0", 115200, nil)
 	session.InsertPort("/dev/ttyUSB0", session.NewPortSession(testMgr, "/dev/ttyUSB0", 115200, session.ModeReader))
 
-	// Add boot output that will be captured.
-	testMgr.AddToBuffer("ESP-IDF v5.1")
-	testMgr.AddToBuffer("boot: ready")
+	// Inject boot output during the capture wait window (post-reset).
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		testMgr.AddToBuffer("ESP-IDF v5.1")
+		testMgr.AddToBuffer("boot: ready")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
 
 	mockFlasher := &mockFlasher{}
 	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
@@ -98,12 +124,16 @@ func TestHandleEraseBootCapture(t *testing.T) {
 	setupTestFlasherFactory(t)
 	setupFastWaitForPort(t)
 	setupTestListPorts(t)
-	setupFastBootCapture(t)
 
 	testMgr := serial.NewManager()
 	testMgr.SetTestState(true, "/dev/ttyUSB0", 115200, nil)
 	session.InsertPort("/dev/ttyUSB0", session.NewPortSession(testMgr, "/dev/ttyUSB0", 115200, session.ModeReader))
-	testMgr.AddToBuffer("boot: erased")
+
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		testMgr.AddToBuffer("boot: erased")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
 
 	mockFlasher := &mockFlasher{}
 	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
@@ -135,12 +165,16 @@ func TestHandleResetBootCapture(t *testing.T) {
 	setupTestFlasherFactory(t)
 	setupFastWaitForPort(t)
 	setupTestListPorts(t)
-	setupFastBootCapture(t)
 
 	testMgr := serial.NewManager()
 	testMgr.SetTestState(true, "/dev/ttyUSB0", 115200, nil)
 	session.InsertPort("/dev/ttyUSB0", session.NewPortSession(testMgr, "/dev/ttyUSB0", 115200, session.ModeReader))
-	testMgr.AddToBuffer("boot: reset")
+
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		testMgr.AddToBuffer("boot: reset")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
 
 	mockFlasher := &mockFlasher{}
 	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
