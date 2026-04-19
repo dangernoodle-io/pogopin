@@ -10,4 +10,6 @@ jobs:
     uses: dangernoodle-io/.github/.github/workflows/go-release.yml@main
     with:
       homebrew: true
+      marketplace: true
+      plugin-name: pogopin-mcp
     secrets: inherit
