@@ -9,7 +9,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
 
-	"dangernoodle.io/breadboard/internal/decode"
+	"dangernoodle.io/pogopin/internal/decode"
 )
 
 // extractTextContent retrieves the text from a CallToolResult.

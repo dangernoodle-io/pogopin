@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
-	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
+	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
@@ -589,7 +589,7 @@ func TestHandleSerialFlashCwd(t *testing.T) {
 }
 
 func TestRegisterTools(t *testing.T) {
-	s := server.NewMCPServer("breadboard", "test",
+	s := server.NewMCPServer("pogopin", "test",
 		server.WithToolCapabilities(true),
 	)
 	require.NotNil(t, s)

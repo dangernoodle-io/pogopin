@@ -7,9 +7,9 @@ import (
 	goSerial "go.bug.st/serial"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
-	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
+	"dangernoodle.io/pogopin/internal/session"
 )
 
 // noopPort implements go.bug.st/serial.Port with all no-op methods.

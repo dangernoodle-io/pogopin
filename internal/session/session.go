@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
-	"dangernoodle.io/breadboard/internal/status"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
+	"dangernoodle.io/pogopin/internal/status"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 

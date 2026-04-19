@@ -3,8 +3,8 @@ package session
 import (
 	"time"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
 )
 
 // NewPortSession creates a PortSession with the given fields. Exported for cross-package testing.

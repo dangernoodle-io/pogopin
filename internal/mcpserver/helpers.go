@@ -10,7 +10,7 @@ import (
 	"tinygo.org/x/espflasher/pkg/espflasher"
 	"tinygo.org/x/espflasher/pkg/nvs"
 
-	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/pogopin/internal/session"
 )
 
 // parseNVSParams extracts NVS parameters from args with defaults.

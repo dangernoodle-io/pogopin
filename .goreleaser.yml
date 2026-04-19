@@ -9,7 +9,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - '-s -w -X dangernoodle.io/breadboard/internal/cli.Version={{.Version}}'
+      - '-s -w -X dangernoodle.io/pogopin/internal/cli.Version={{.Version}}'
     goos:
       - linux
       - darwin
@@ -17,7 +17,7 @@ builds:
     goarch:
       - amd64
       - arm64
-    binary: breadboard
+    binary: pogo
 archives:
   - formats: [tar.gz]
     format_overrides:
@@ -54,8 +54,8 @@ homebrew_casks:
         url: 'git@github.com:dangernoodle-io/homebrew-tap.git'
         private_key: '{{ .Env.SSH_PRIVATE_KEY }}'
     directory: Casks
-    homepage: https://github.com/dangernoodle-io/breadboard
+    homepage: https://github.com/dangernoodle-io/pogopin
     description: Embedded development MCP server (serial, ESP-IDF, decode)
     license: MIT
     binaries:
-      - breadboard
+      - pogo

@@ -5,9 +5,9 @@ import (
 	"os"
 	"testing"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
-	"dangernoodle.io/breadboard/internal/session"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
+	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

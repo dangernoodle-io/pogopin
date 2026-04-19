@@ -1,7 +1,7 @@
 .PHONY: build test cover lint fmt tidy clean install
 
 build:
-	CGO_ENABLED=0 go build -o breadboard .
+	CGO_ENABLED=0 go build -o pogo .
 
 install:
 	go install .
@@ -22,4 +22,4 @@ tidy:
 	go mod tidy
 
 clean:
-	rm -f breadboard coverage.out
+	rm -f pogo coverage.out

@@ -7,7 +7,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 
-	"dangernoodle.io/breadboard/internal/decode"
+	"dangernoodle.io/pogopin/internal/decode"
 )
 
 // handleDecodeBacktrace handles the decode_backtrace MCP tool request.

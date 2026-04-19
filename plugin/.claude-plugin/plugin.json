@@ -1,14 +1,14 @@
 {
-  "name": "breadboard-mcp",
+  "name": "pogopin-mcp",
   "description": "Embedded development MCP server — serial monitoring, ESP-IDF flashing, crash decode",
   "author": { "name": "dangernoodle-io", "url": "https://github.com/dangernoodle-io" },
-  "homepage": "https://github.com/dangernoodle-io/breadboard",
-  "repository": "https://github.com/dangernoodle-io/breadboard",
+  "homepage": "https://github.com/dangernoodle-io/pogopin",
+  "repository": "https://github.com/dangernoodle-io/pogopin",
   "license": "MIT",
   "keywords": ["esp", "esp-idf", "mcp", "embedded", "firmware", "serial", "nvs", "backtrace"],
   "mcpServers": {
-    "breadboard": {
-      "command": "${CLAUDE_PLUGIN_DATA}/bin/breadboard",
+    "pogopin": {
+      "command": "${CLAUDE_PLUGIN_DATA}/bin/pogo",
       "args": ["server"]
     }
   }

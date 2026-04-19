@@ -10,31 +10,31 @@ stat_mt_size() {
 }
 
 BINARY_DIR="${CLAUDE_PLUGIN_DATA}/bin"
-BINARY="${BINARY_DIR}/breadboard"
+BINARY="${BINARY_DIR}/pogo"
 VERSION_FILE="${CLAUDE_PLUGIN_DATA}/.version"
-REPO="dangernoodle-io/breadboard"
+REPO="dangernoodle-io/pogopin"
 
 # Dev mode: use a local binary instead of fetching from GitHub.
-if [ -n "${BREADBOARD_DEV_BINARY:-}" ]; then
-  if [ ! -x "$BREADBOARD_DEV_BINARY" ]; then
-    echo "breadboard: dev binary not found: $BREADBOARD_DEV_BINARY" >&2
+if [ -n "${POGOPIN_DEV_BINARY:-}" ]; then
+  if [ ! -x "$POGOPIN_DEV_BINARY" ]; then
+    echo "pogopin: dev binary not found: $POGOPIN_DEV_BINARY" >&2
     exit 1
   fi
   mkdir -p "$BINARY_DIR"
-  if [ -x "$BINARY" ] && [ "$(stat_mt_size "$BREADBOARD_DEV_BINARY")" = "$(stat_mt_size "$BINARY")" ]; then
+  if [ -x "$BINARY" ] && [ "$(stat_mt_size "$POGOPIN_DEV_BINARY")" = "$(stat_mt_size "$BINARY")" ]; then
     exit 0
   fi
-  cp "$BREADBOARD_DEV_BINARY" "$BINARY"
+  cp "$POGOPIN_DEV_BINARY" "$BINARY"
   chmod 755 "$BINARY"
   [ "$(uname -s)" = "Darwin" ] && codesign -s - "$BINARY" 2>/dev/null
   printf 'dev' > "$VERSION_FILE"
-  echo "breadboard: installed dev binary from $BREADBOARD_DEV_BINARY"
+  echo "pogopin: installed dev binary from $POGOPIN_DEV_BINARY"
   exit 0
 fi
 
 # Local binary: check well-known paths before hitting GitHub.
 LOCAL_BIN=""
-for candidate in /usr/local/bin/breadboard /opt/homebrew/bin/breadboard; do
+for candidate in /usr/local/bin/pogo /opt/homebrew/bin/pogo; do
   if [ -x "$candidate" ]; then
     LOCAL_BIN="$candidate"
     break
@@ -61,7 +61,7 @@ if [ -n "$LOCAL_BIN" ]; then
   [ "$(uname -s)" = "Darwin" ] && codesign -s - "$BINARY" 2>/dev/null
   LOCAL_VERSION="$("$BINARY" --version 2>/dev/null || echo "local")"
   printf '%s' "$LOCAL_VERSION" > "$VERSION_FILE"
-  echo "breadboard: installed ${LOCAL_VERSION} from ${LOCAL_BIN}"
+  echo "pogopin: installed ${LOCAL_VERSION} from ${LOCAL_BIN}"
   exit 0
 fi
 
@@ -72,7 +72,7 @@ case "$(uname -s)" in
   Darwin) OS="darwin" ;;
   Linux)  OS="linux" ;;
   *)
-    echo "breadboard: unsupported OS: $(uname -s)" >&2
+    echo "pogopin: unsupported OS: $(uname -s)" >&2
     exit 1
     ;;
 esac
@@ -82,7 +82,7 @@ case "$(uname -m)" in
   x86_64)        ARCH="amd64" ;;
   arm64|aarch64) ARCH="arm64" ;;
   *)
-    echo "breadboard: unsupported arch: $(uname -m)" >&2
+    echo "pogopin: unsupported arch: $(uname -m)" >&2
     exit 1
     ;;
 esac
@@ -101,7 +101,7 @@ LATEST_TAG="$(curl -sL "https://api.github.com/repos/${REPO}/releases/latest" \
   | sed 's/.*"tag_name": *"\(.*\)".*/\1/')"
 
 if [ -z "$LATEST_TAG" ]; then
-  echo "breadboard: failed to fetch latest release tag" >&2
+  echo "pogopin: failed to fetch latest release tag" >&2
   [ -x "$BINARY" ] && exit 0
   exit 1
 fi
@@ -120,15 +120,15 @@ if [ "$INSTALLED_VERSION" = "$LATEST_VERSION" ] && [ -x "$BINARY" ]; then
   exit 0
 fi
 
-echo "breadboard: installing ${LATEST_VERSION} (${OS}/${ARCH})..."
+echo "pogopin: installing ${LATEST_VERSION} (${OS}/${ARCH})..."
 
 mkdir -p "$BINARY_DIR"
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 BASE_URL="https://github.com/${REPO}/releases/download/${LATEST_TAG}"
-ARCHIVE_NAME="breadboard_${LATEST_VERSION}_${OS}_${ARCH}.${EXT}"
-CHECKSUM_NAME="breadboard_${LATEST_VERSION}_SHA256SUMS"
+ARCHIVE_NAME="pogo_${LATEST_VERSION}_${OS}_${ARCH}.${EXT}"
+CHECKSUM_NAME="pogo_${LATEST_VERSION}_SHA256SUMS"
 
 # Download archive and checksums.
 curl -sL --fail -o "${WORK_DIR}/${ARCHIVE_NAME}" "${BASE_URL}/${ARCHIVE_NAME}"
@@ -146,8 +146,8 @@ else
 fi
 
 # Install binary.
-install -m 755 "${WORK_DIR}/extracted/breadboard" "$BINARY"
+install -m 755 "${WORK_DIR}/extracted/pogo" "$BINARY"
 [ "$OS" = "darwin" ] && codesign -s - "$BINARY" 2>/dev/null
 printf '%s' "$LATEST_VERSION" > "$VERSION_FILE"
 
-echo "breadboard: installed ${LATEST_VERSION}"
+echo "pogopin: installed ${LATEST_VERSION}"

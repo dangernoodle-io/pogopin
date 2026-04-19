@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"dangernoodle.io/breadboard/internal/esp"
-	"dangernoodle.io/breadboard/internal/serial"
+	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	goSerial "go.bug.st/serial"

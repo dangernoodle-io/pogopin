@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"dangernoodle.io/breadboard/internal/session"
-	"dangernoodle.io/breadboard/internal/status"
+	"dangernoodle.io/pogopin/internal/session"
+	"dangernoodle.io/pogopin/internal/status"
 	"github.com/mark3labs/mcp-go/server"
 )
 
@@ -23,7 +23,7 @@ func Serve() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := server.NewMCPServer("breadboard", "0.1.0",
+	s := server.NewMCPServer("pogopin", "0.1.0",
 		server.WithToolCapabilities(true),
 		server.WithInstructions(instructions),
 	)

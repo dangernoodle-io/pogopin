@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"dangernoodle.io/breadboard/internal/cli"
+	"dangernoodle.io/pogopin/internal/cli"
 )
 
 func main() {
