@@ -12,6 +12,7 @@ Embedded development MCP server — serial monitoring, ESP-IDF flashing, ESP chi
 
 - **MCP server with 18 tools** for serial I/O, ESP flash operations, NVS management, and crash decoding. See the [server README](https://github.com/dangernoodle-io/pogopin) for full tool reference.
 - **2 hooks auto-inject context** into prompts. SessionStart installs the binary; UserPromptSubmit detects ESP-IDF projects and reminds you to check chip info before flashing.
+- **`board-medic` subagent + `/board-medic` skill** — read-mostly hardware diagnostician for embedded boards. Observes state, names a hypothesis, and recommends recovery actions for the main agent to execute. Spawned automatically when you describe a hardware symptom ("board doesn't boot after flash", "guru meditation on every reset") or on demand via `/board-medic`. ESP32 family covered today; other platforms added as tooling lands.
 
 ## Hooks
 
@@ -21,13 +22,6 @@ Embedded development MCP server — serial monitoring, ESP-IDF flashing, ESP chi
 ## Configuration
 
 - `POGOPIN_DEV_BINARY` — path to local dev binary (bypasses GitHub download)
-
-## Features not yet in plugin
-
-- Skills: dedicated commands for common tasks (flash, decode backtrace, read NVS)
-- Subagents: assistant agents for firmware analysis and project configuration
-
-These will land in v0.2.0.
 
 ## Server
 
