@@ -50,6 +50,8 @@ make install  # go install .
 | esp_nvs_delete | ESP | Delete NVS key or namespace (read-modify-write) |
 | decode_backtrace | decode | Symbolize xtensa/riscv32 panic frames |
 
+Tools register in two tiers. The **core tier** (6× `serial_*` + `decode_backtrace`) registers at startup. The **hardware tier** (10× `esp_*` + `flash_external`) registers lazily on the first `serial_list` or `serial_start` call via `notifications/tools/list_changed`. Sessions that only decode crash logs never pay for the ESP tool surface.
+
 ## Dependencies
 
 - `github.com/spf13/cobra` — CLI framework

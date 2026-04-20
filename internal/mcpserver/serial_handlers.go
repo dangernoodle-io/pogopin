@@ -15,6 +15,7 @@ import (
 )
 
 func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	unlockHardwareTier()
 	usbOnly := false
 	if v, ok := req.GetArguments()["usb_only"].(bool); ok {
 		usbOnly = v
@@ -34,6 +35,7 @@ func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	unlockHardwareTier()
 	port, err := req.RequireString("port")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
