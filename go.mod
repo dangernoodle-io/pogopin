@@ -24,4 +24,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace tinygo.org/x/espflasher => github.com/jgangemi/espflasher v0.0.0-20260419220346-b5ccbddaaff3
+replace tinygo.org/x/espflasher => github.com/jgangemi/espflasher v0.0.0-20260422044400-2aed4658b8db

@@ -1086,3 +1086,59 @@ func TestExpireSessionWaitsForPort(t *testing.T) {
 
 	assert.True(t, exists || sess.mode == ModeReader, "session should restart after port reappears")
 }
+
+func TestOpenForFlasher(t *testing.T) {
+	setupTestPorts(t)
+
+	port := "/dev/cu.test"
+	portCalled := false
+	nameCalled := ""
+	var modeCalled *goSerial.Mode
+
+	prevSerialOpen := SetSerialOpenFn(func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		portCalled = true
+		nameCalled = name
+		modeCalled = mode
+		return &noopPort{}, nil
+	})
+	t.Cleanup(func() { serialOpen = prevSerialOpen })
+
+	// Case 1: port in ModeFlasher — opener delegates to serialOpen
+	sess := NewPortSession(serial.NewManager(), port, 115200, ModeFlasher)
+	InsertPort(port, sess)
+
+	opener := OpenForFlasher(port)
+	require.NotNil(t, opener)
+
+	mode := &goSerial.Mode{BaudRate: 115200}
+	p, err := opener(port, mode)
+
+	assert.NoError(t, err)
+	assert.NotNil(t, p)
+	assert.True(t, portCalled, "serialOpen should have been called")
+	assert.Equal(t, port, nameCalled)
+	assert.Equal(t, mode, modeCalled)
+
+	// Case 2: port not registered — opener returns error
+	portCalled = false
+	opener2 := OpenForFlasher("/dev/cu.nonexistent")
+	p2, err2 := opener2("/dev/cu.nonexistent", mode)
+
+	assert.Error(t, err2)
+	assert.Nil(t, p2)
+	assert.False(t, portCalled, "serialOpen should not be called for unregistered port")
+	assert.Contains(t, err2.Error(), "not in ModeFlasher")
+
+	// Case 3: port in ModeReader — opener returns error
+	portCalled = false
+	sessReader := NewPortSession(serial.NewManager(), "/dev/cu.reader", 115200, ModeReader)
+	InsertPort("/dev/cu.reader", sessReader)
+
+	opener3 := OpenForFlasher("/dev/cu.reader")
+	p3, err3 := opener3("/dev/cu.reader", mode)
+
+	assert.Error(t, err3)
+	assert.Nil(t, p3)
+	assert.False(t, portCalled, "serialOpen should not be called for ModeReader port")
+	assert.Contains(t, err3.Error(), "not in ModeFlasher")
+}

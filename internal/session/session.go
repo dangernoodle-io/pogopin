@@ -10,6 +10,7 @@ import (
 	"dangernoodle.io/pogopin/internal/esp"
 	"dangernoodle.io/pogopin/internal/serial"
 	"dangernoodle.io/pogopin/internal/status"
+	goSerial "go.bug.st/serial"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 
@@ -20,6 +21,7 @@ var (
 	newFlasherFactory esp.FlasherFactory = esp.DefaultFlasherFactory
 	listPortsFn                          = serial.ListPorts
 	isUSBPortFn                          = serial.IsUSBPort
+	serialOpen                           = goSerial.Open
 )
 
 // PortMode indicates the current usage mode of a port.
@@ -95,6 +97,11 @@ func modeString(m PortMode) string {
 // USB ports get up to 3 retries with 1s delays (device may still be re-enumerating).
 // All ports try FindSimilarPort as a last resort.
 func retryFlasherCreate(port string, opts *espflasher.FlasherOptions, sess *PortSession) (esp.Flasher, error) {
+	// Wire the serial opener before creating the flasher
+	if opts.SerialOpener == nil {
+		opts.SerialOpener = OpenForFlasher(port)
+	}
+
 	f, err := newFlasherFactory(port, opts)
 	if err == nil {
 		return f, nil
@@ -175,6 +182,22 @@ func WaitForPort(port string, timeout time.Duration) string {
 		}
 
 		time.Sleep(waitForPortInterval)
+	}
+}
+
+// OpenForFlasher returns a serial opener suitable for espflasher's FlasherOptions.SerialOpener.
+// It asserts the named port is currently in ModeFlasher (caller must have gone through
+// AcquireForFlasher) and delegates to the configured serialOpen hook (goSerial.Open by default).
+func OpenForFlasher(portName string) func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+	return func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		portsMu.Lock()
+		sess, ok := ports[portName]
+		modeOK := ok && sess.mode == ModeFlasher
+		portsMu.Unlock()
+		if !modeOK {
+			return nil, fmt.Errorf("port %s not in ModeFlasher; OpenForFlasher requires prior AcquireForFlasher", portName)
+		}
+		return serialOpen(name, mode)
 	}
 }
 
