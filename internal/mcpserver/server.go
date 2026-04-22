@@ -17,7 +17,7 @@ ESP flash ops: esp_read_flash (raw bytes or md5=true for hash), esp_erase
 ESP NVS: esp_read_nvs (read), esp_nvs_set (set keys, RMW), esp_nvs_delete (delete keys, RMW), esp_write_nvs (DESTRUCTIVE full partition replace)
 ESP low-level: esp_register (read/write), esp_reset
 Crash analysis: decode_backtrace (xtensa/riscv32 panic frames)
-Always serial_stop before esp_* operations on the same port.`
+esp_* tools auto-stop the monitor and restart after the op.`
 
 // Serve starts the MCP server.
 func Serve() error {

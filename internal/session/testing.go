@@ -5,6 +5,7 @@ import (
 
 	"dangernoodle.io/pogopin/internal/esp"
 	"dangernoodle.io/pogopin/internal/serial"
+	goSerial "go.bug.st/serial"
 )
 
 // NewPortSession creates a PortSession with the given fields. Exported for cross-package testing.
@@ -78,4 +79,11 @@ func InsertPort(key string, sess *PortSession) {
 // IsUSBPort delegates to the injectable isUSBPortFn.
 func IsUSBPort(port string) bool {
 	return isUSBPortFn(port)
+}
+
+// SetSerialOpenFn sets the serial open function and returns the previous value.
+func SetSerialOpenFn(fn func(string, *goSerial.Mode) (goSerial.Port, error)) func(string, *goSerial.Mode) (goSerial.Port, error) {
+	prev := serialOpen
+	serialOpen = fn
+	return prev
 }
