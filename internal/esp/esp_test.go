@@ -1,6 +1,7 @@
 package esp
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"testing"
@@ -1023,4 +1024,83 @@ func TestNVSSetUsesNVSSetBatch(t *testing.T) {
 	require.Len(t, written, 1)
 	assert.Equal(t, "key", written[0].Key)
 	assert.Equal(t, uint32(999), written[0].Value)
+}
+
+func TestFlashESPForceOffsetsSkipsValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	fw := tmpDir + "/fw.bin"
+	err := os.WriteFile(fw, []byte("firmware"), 0644)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{
+		chipNameVal: "ESP32",
+		// Mock returns stale partition table
+		readFlashVal: []byte{0xFF, 0xFF},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	// flash at 0x0 would normally fail validation because it doesn't match any partition
+	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
+		{Path: fw, Offset: 0x0},
+	}, FlashOptions{ForceOffsets: true})
+
+	require.NoError(t, err)
+	assert.True(t, mock.flashImagesCalled)
+	assert.Equal(t, 8, result.BytesWritten)
+}
+
+func TestFlashESPPrefersInFlightPartitionTable(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Helper to create partition entry (copied from partition_test.go)
+	makeEntry := func(typ, subtype uint8, offset, size uint32, label string) []byte {
+		entry := make([]byte, 32)
+		binary.LittleEndian.PutUint16(entry[0:2], partitionMagic)
+		entry[2] = typ
+		entry[3] = subtype
+		binary.LittleEndian.PutUint32(entry[4:8], offset)
+		binary.LittleEndian.PutUint32(entry[8:12], size)
+		copy(entry[12:28], label)
+		return entry
+	}
+
+	// New partition table: app at 0x10000
+	newPartitionTableData := make([]byte, 64)
+	newEntry := makeEntry(0, 0x10, 0x10000, 0x100000, "ota_0")
+	copy(newPartitionTableData[0:32], newEntry)
+	newPartitionTableData[32] = 0xFF // MD5 marker
+
+	err := os.WriteFile(tmpDir+"/new_partitions.bin", newPartitionTableData, 0644)
+	require.NoError(t, err)
+
+	fw := tmpDir + "/firmware.bin"
+	err = os.WriteFile(fw, []byte("firmware"), 0644)
+	require.NoError(t, err)
+
+	// Device has stale partition table: app at 0x20000
+	stalePartitionTableData := make([]byte, 64)
+	staleEntry := makeEntry(0, 0x10, 0x20000, 0x100000, "ota_0")
+	copy(stalePartitionTableData[0:32], staleEntry)
+
+	mock := &mockFlasher{
+		chipNameVal: "ESP32",
+		// Mock returns stale partition table when ReadFlash is called
+		readFlashVal: stalePartitionTableData,
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	// Flash new partition table at 0x8000 (in-flight) and firmware at 0x10000 (new app offset)
+	// Validation should prefer the new partition table over the device's stale one
+	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
+		{Path: tmpDir + "/new_partitions.bin", Offset: 0x8000},
+		{Path: fw, Offset: 0x10000},
+	}, FlashOptions{})
+
+	require.NoError(t, err)
+	assert.True(t, mock.flashImagesCalled)
+	assert.Equal(t, len(newPartitionTableData)+8, result.BytesWritten)
 }

@@ -121,3 +121,16 @@ func TestValidateFlashOffsetsSkipsBootloaderWhenUnknown(t *testing.T) {
 	err := ValidateFlashOffsets(partitions, images, 0, false)
 	require.Error(t, err)
 }
+
+func TestValidateFlashOffsetsAcceptsInFlightPartitionTable(t *testing.T) {
+	// New in-flight partition table has app at 0x10000
+	// (e.g., when flashing a new partition table alongside a new app image).
+	newPartitions := []PartitionEntry{
+		{Type: 0, Offset: 0x10000, Label: "ota_0"},
+		{Type: 0, Offset: 0x100000, Label: "ota_1"},
+	}
+	// Validation should accept 0x10000 because it matches the new partition table
+	images := []ImageSpec{{Path: "firmware.bin", Offset: 0x10000}}
+	err := ValidateFlashOffsets(newPartitions, images, 0, false)
+	assert.NoError(t, err)
+}

@@ -47,10 +47,11 @@ type ImageSpec struct {
 type FlashOptions struct {
 	BaudRate      int    `json:"baud_rate"`
 	FlashBaudRate int    `json:"flash_baud_rate"`
-	ResetMode     string `json:"reset_mode"` // "auto" (default), "default", "usb_jtag", "no_reset"
-	FlashMode     string `json:"flash_mode"` // "dio", "dout", "qio", "qout"
-	FlashSize     string `json:"flash_size"` // "1MB", "2MB", "4MB", etc.
-	ChipType      string `json:"chip_type"`  // "" = auto-detect
+	ResetMode     string `json:"reset_mode"`    // "auto" (default), "default", "usb_jtag", "no_reset"
+	FlashMode     string `json:"flash_mode"`    // "dio", "dout", "qio", "qout"
+	FlashSize     string `json:"flash_size"`    // "1MB", "2MB", "4MB", etc.
+	ChipType      string `json:"chip_type"`     // "" = auto-detect
+	ForceOffsets  bool   `json:"force_offsets"` // skip partition-table offset validation (factory-flash, recovery)
 }
 
 // FlashResult reports the outcome of a flash operation.
@@ -184,17 +185,30 @@ func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts Flas
 	defer func() { _ = f.Close() }()
 
 	// Validate image offsets against device partition table
-	ptData, ptErr := f.ReadFlash(partitionTableOffset, partitionTableSize)
-	if ptErr == nil {
-		partitions := ParsePartitionTable(ptData)
-		if len(partitions) > 0 {
-			bootOffset, bootOK := f.BootloaderFlashOffset()
-			if err := ValidateFlashOffsets(partitions, images, bootOffset, bootOK); err != nil {
-				return FlashResult{}, err
+	if !opts.ForceOffsets {
+		var ptData []byte
+		var ptErr error
+		// prefer in-flight partition table
+		for _, img := range images {
+			if img.Offset == partitionTableOffset {
+				ptData, ptErr = os.ReadFile(img.Path)
+				break
+			}
+		}
+		if ptData == nil {
+			ptData, ptErr = f.ReadFlash(partitionTableOffset, partitionTableSize)
+		}
+		if ptErr == nil {
+			partitions := ParsePartitionTable(ptData)
+			if len(partitions) > 0 {
+				bootOffset, bootOK := f.BootloaderFlashOffset()
+				if err := ValidateFlashOffsets(partitions, images, bootOffset, bootOK); err != nil {
+					return FlashResult{}, err
+				}
 			}
 		}
 	}
-	// If ReadFlash fails, skip validation (device may not have a partition table yet)
+	// If ReadFlash fails or ForceOffsets is true, skip validation
 
 	imageParts := make([]espflasher.ImagePart, len(images))
 	totalBytes := 0
