@@ -27,7 +27,7 @@ type Flasher interface {
 	ReadRegister(address uint32) (uint32, error)
 	WriteRegister(address, value uint32) error
 	GetSecurityInfo() (*espflasher.SecurityInfo, error)
-	FlashMD5(offset, size uint32) (string, error)
+	GetFlashMD5(offset, size uint32) (string, error)
 	ReadFlash(offset, size uint32) ([]byte, error)
 	FlushInput()
 }
@@ -415,7 +415,7 @@ func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudR
 		_ = f.Close()
 	}()
 
-	md5, err := f.FlashMD5(offset, size)
+	md5, err := f.GetFlashMD5(offset, size)
 	if err != nil {
 		return FlashMD5Result{}, err
 	}
