@@ -145,7 +145,7 @@ func (m *mockFlasher) GetSecurityInfo() (*espflasher.SecurityInfo, error) {
 	return m.getSecurityInfoVal, m.getSecurityInfoErr
 }
 
-func (m *mockFlasher) FlashMD5(offset, size uint32) (string, error) {
+func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 	return m.flashMD5Val, m.flashMD5Err
 }
 
