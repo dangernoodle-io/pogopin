@@ -16,6 +16,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("flash_mode", mcp.Description("Flash mode: dio, dout, qio, qout")),
 		mcp.WithString("flash_size", mcp.Description("Flash size: 1MB, 2MB, 4MB, 8MB, 16MB")),
 		mcp.WithString("chip_type", mcp.Description("Chip type: esp32, esp32s3, esp32c6, etc (default auto-detect)")),
+		mcp.WithBoolean("force_offsets", mcp.Description("Skip partition-table validation. Use for factory-flash (combined firmware.factory.bin at 0x0), recovery from erased chip, or non-standard layouts. DESTRUCTIVE if misused.")),
 		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait for boot output after reset (default 2; 0 = skip)")),
 	)
 	s.AddTool(espFlashTool, withRecover(handleFlash))

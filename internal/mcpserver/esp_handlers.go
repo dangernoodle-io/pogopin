@@ -75,6 +75,9 @@ func handleFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	if chipType, ok := req.GetArguments()["chip_type"].(string); ok {
 		opts.ChipType = chipType
 	}
+	if forceOffsets, ok := req.GetArguments()["force_offsets"].(bool); ok {
+		opts.ForceOffsets = forceOffsets
+	}
 
 	// Flash
 	result, err := esp.FlashESP(factory, port, images, opts)
