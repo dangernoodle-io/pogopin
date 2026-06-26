@@ -7,7 +7,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.9.0
 	go.bug.st/serial v1.6.4
-	tinygo.org/x/espflasher v0.0.0-20260419220346-b5ccbddaaff3
+	tinygo.org/x/espflasher v0.6.1
 )
 
 require (
