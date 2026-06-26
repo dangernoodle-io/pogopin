@@ -32,6 +32,11 @@ The plugin adds, beyond the raw MCP tools:
 - Auto-installs the `pogo` binary on session start — no manual install step
 - ESP-IDF context detection hooks for automatic project environment setup
 - Serial monitoring tools pre-wired to the Claude Code environment
+- Four ESP32/Arduino subagents — `board-medic` (hardware diagnostics) plus `firmware-architect`, `firmware-reviewer`, and `firmware-implementer` (design, audit, implement)
+
+The firmware agents optionally use the `espressif-documentation` and `esp-component-registry` MCP servers (ESP-IDF docs + component search) when those servers are installed — they degrade gracefully if absent.
+
+**Opting out of the agents:** they ship enabled. To keep the MCP tools but drop any agent, add it to `permissions.deny` in your `settings.json` — e.g. `"Agent(firmware-reviewer)"`. Disabling the whole plugin removes the tools too, so `permissions.deny` is the way to drop only the agents.
 
 Source: [dangernoodle-io/dangernoodle-marketplace](https://github.com/dangernoodle-io/dangernoodle-marketplace).
 
