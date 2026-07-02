@@ -5,15 +5,14 @@ package serial
 
 import (
 	"fmt"
-	"runtime"
-	"strings"
 
 	"go.bug.st/serial/enumerator"
 )
 
 // IsUSBPort detects if a serial port is a USB device.
 // With CGO enabled, uses the detailed port enumeration from enumerator when available.
-// Falls back to heuristic matching (matching serial_nocgo.go) if enumeration fails or port not found.
+// Falls back to the shared heuristic (see usbPortNameHeuristic in serial.go)
+// if enumeration fails or the port is not found.
 func IsUSBPort(name string) bool {
 	ports, err := enumerator.GetDetailedPortsList()
 	if err == nil {
@@ -25,18 +24,7 @@ func IsUSBPort(name string) bool {
 	}
 
 	// Fall back to heuristic matching if port not found in enumeration
-	// Use same heuristics as serial_nocgo.go for consistency
-	switch runtime.GOOS {
-	case "darwin":
-		return strings.HasPrefix(name, "/dev/cu.usbmodem") || strings.HasPrefix(name, "/dev/cu.usbserial")
-	case "linux":
-		return strings.HasPrefix(name, "/dev/ttyUSB") || strings.HasPrefix(name, "/dev/ttyACM")
-	case "windows":
-		return strings.HasPrefix(name, "COM")
-	default:
-		// Assume USB on unknown platforms
-		return true
-	}
+	return usbPortNameHeuristic(name)
 }
 
 // ListPorts returns detailed port information from the system.
