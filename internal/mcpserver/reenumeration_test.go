@@ -38,7 +38,7 @@ func TestHandleFlashNewPort(t *testing.T) {
 	})
 
 	// Return a different port to simulate re-enumeration.
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
 			{Name: "/dev/ttyUSB1"},
 		}, nil
@@ -92,7 +92,7 @@ func TestHandleEraseNewPort(t *testing.T) {
 		return mgr
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
 			{Name: "/dev/ttyUSB1"},
 		}, nil
@@ -135,7 +135,7 @@ func TestHandleResetNewPort(t *testing.T) {
 		return mgr
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
 			{Name: "/dev/ttyUSB1"},
 		}, nil
@@ -179,7 +179,7 @@ func TestHandleFlashNoNewPort(t *testing.T) {
 	})
 
 	// Return same port — no re-enumeration.
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
 			{Name: "/dev/ttyUSB0"},
 		}, nil

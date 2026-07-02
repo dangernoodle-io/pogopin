@@ -7,8 +7,7 @@ import (
 
 func registerSerialTools(s *server.MCPServer) {
 	listTool := mcp.NewTool("serial_list",
-		mcp.WithDescription("List available serial ports. Returns JSON array of {port, description, usb_vid, usb_pid, usb_serial} objects."),
-		mcp.WithBoolean("usb_only", mcp.Description("Only list USB ports")),
+		mcp.WithDescription("List all available serial ports."),
 	)
 	s.AddTool(listTool, withRecover(handleSerialList))
 

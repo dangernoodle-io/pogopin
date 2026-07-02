@@ -4,35 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"go.bug.st/serial"
 )
-
-// usbPortNameHeuristic detects if a serial port name corresponds to a USB
-// device using platform-specific naming heuristics. Shared by the cgo
-// fallback path and the nocgo IsUSBPort implementation so they can't drift.
-//   - macOS: any /dev/cu.* path containing "usb" (case-insensitive) — covers
-//     usbmodem, usbserial, CH340's wchusbserial, and CP210x's SLAB_USBtoUART.
-//   - Linux: /dev/ttyUSB* or /dev/ttyACM*.
-//   - Windows: COM* (all COM ports are assumed USB).
-//   - Other platforms: assumed USB by default.
-func usbPortNameHeuristic(name string) bool {
-	switch runtime.GOOS {
-	case "darwin":
-		return strings.HasPrefix(name, "/dev/cu.") && strings.Contains(strings.ToLower(name), "usb")
-	case "linux":
-		return strings.HasPrefix(name, "/dev/ttyUSB") || strings.HasPrefix(name, "/dev/ttyACM")
-	case "windows":
-		return strings.HasPrefix(name, "COM")
-	default:
-		// Assume USB on unknown platforms
-		return true
-	}
-}
 
 var reconnectDelays = []time.Duration{
 	100 * time.Millisecond,
@@ -43,12 +20,7 @@ var reconnectDelays = []time.Duration{
 }
 
 type PortInfo struct {
-	Name         string `json:"name"`
-	IsUSB        bool   `json:"is_usb"`
-	VID          string `json:"vid,omitempty"`
-	PID          string `json:"pid,omitempty"`
-	SerialNumber string `json:"serial_number,omitempty"`
-	Product      string `json:"product,omitempty"`
+	Name string `json:"name"`
 }
 
 type RingBuffer struct {
@@ -386,12 +358,12 @@ func portNamePrefix(name string) string {
 // FindSimilarPort scans available ports for one matching the same name prefix
 // as portName but with a different numeric suffix. Returns the new port name,
 // or empty string if none found.
-func FindSimilarPort(portName string, listFn func(usbOnly bool) ([]PortInfo, error)) string {
+func FindSimilarPort(portName string, listFn func() ([]PortInfo, error)) string {
 	prefix := portNamePrefix(portName)
 	if prefix == "" {
 		return ""
 	}
-	ports, err := listFn(false)
+	ports, err := listFn()
 	if err != nil {
 		return ""
 	}

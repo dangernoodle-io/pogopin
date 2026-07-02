@@ -28,7 +28,7 @@ func SetFlasherFactory(f esp.FlasherFactory) esp.FlasherFactory {
 }
 
 // SetListPortsFn sets the port listing function and returns the previous value.
-func SetListPortsFn(fn func(bool) ([]serial.PortInfo, error)) func(bool) ([]serial.PortInfo, error) {
+func SetListPortsFn(fn func() ([]serial.PortInfo, error)) func() ([]serial.PortInfo, error) {
 	prev := listPortsFn
 	listPortsFn = fn
 	return prev
