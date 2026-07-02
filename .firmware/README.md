@@ -114,7 +114,7 @@ Seeded on first boot in namespace `test_ns`:
 
 ## Manual test plan
 
-Discover the device port with `serial_list(usb_only=true)` — the port path varies across connections. Use absolute paths for firmware images.
+Discover the device port with `serial_list` — the port path varies across connections. Use absolute paths for firmware images.
 
 ### Operational notes
 
@@ -149,7 +149,7 @@ Discover the device port with `serial_list(usb_only=true)` — the port path var
 
 | Step | Tool | Expected |
 |------|------|----------|
-| List ports | `serial_list(usb_only=true)` | Device appears with VID/PID |
+| List ports | `serial_list` | Device port appears in the list |
 | Start | `serial_start(port, baud=115200)` | "Started reading" |
 | Status | `serial_status(port)` | running=true, reconnecting=false |
 | Reset | `esp_reset(port, boot_wait=3)` | Heartbeat in boot_output |

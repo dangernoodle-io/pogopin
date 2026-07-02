@@ -88,7 +88,7 @@ func TestHandleFlashBootCapture(t *testing.T) {
 		return mockFlasher, nil
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
 	})
 
@@ -140,7 +140,7 @@ func TestHandleEraseBootCapture(t *testing.T) {
 		return mockFlasher, nil
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
 	})
 
@@ -181,7 +181,7 @@ func TestHandleResetBootCapture(t *testing.T) {
 		return mockFlasher, nil
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
 	})
 
@@ -213,7 +213,7 @@ func TestHandleFlashBootWaitZero(t *testing.T) {
 		return mockFlasher, nil
 	})
 
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
 	})
 

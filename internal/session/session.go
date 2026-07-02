@@ -20,7 +20,7 @@ var (
 	}
 	newFlasherFactory esp.FlasherFactory = esp.DefaultFlasherFactory
 	listPortsFn                          = serial.ListPorts
-	isUSBPortFn                          = serial.IsUSBPort
+	isUSBPortFn                          = serial.IsLikelyUSBSerial
 	serialOpen                           = goSerial.Open
 )
 

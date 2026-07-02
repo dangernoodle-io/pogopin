@@ -82,7 +82,7 @@ func TestSerialListUnlocksHardwareTier(t *testing.T) {
 	setupTestListPorts(t)
 	s := newTestServer(t)
 	registerTools(s)
-	session.SetListPortsFn(func(usbOnly bool) ([]serial.PortInfo, error) {
+	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
 		return nil, nil
 	})
 

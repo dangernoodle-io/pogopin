@@ -78,12 +78,8 @@ func boundOutput(lines []string) string {
 
 func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	unlockHardwareTier()
-	usbOnly := false
-	if v, ok := req.GetArguments()["usb_only"].(bool); ok {
-		usbOnly = v
-	}
 
-	ports, err := serial.ListPorts(usbOnly)
+	ports, err := serial.ListPorts()
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}

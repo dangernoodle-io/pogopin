@@ -1087,7 +1087,7 @@ func TestFindSimilarPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockListFn := func(usbOnly bool) ([]PortInfo, error) {
+			mockListFn := func() ([]PortInfo, error) {
 				return tt.availablePorts, tt.listFnErr
 			}
 			result := FindSimilarPort(tt.originalPort, mockListFn)

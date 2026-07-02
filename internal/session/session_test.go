@@ -160,7 +160,7 @@ func TestWaitForPortReenumerates(t *testing.T) {
 
 	// Mock ListPorts to return the reenumerated port after a few calls
 	callCount := 0
-	listPortsFn = func(usbOnly bool) ([]serial.PortInfo, error) {
+	listPortsFn = func() ([]serial.PortInfo, error) {
 		callCount++
 		if callCount > 1 {
 			return []serial.PortInfo{
@@ -872,7 +872,7 @@ func TestFactoryTriesFindSimilarPortOnSyncError(t *testing.T) {
 	origListPorts := listPortsFn
 	t.Cleanup(func() { listPortsFn = origListPorts })
 
-	listPortsFn = func(usbOnly bool) ([]serial.PortInfo, error) {
+	listPortsFn = func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
 			{Name: newPort},
 		}, nil
