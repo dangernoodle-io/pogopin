@@ -36,6 +36,14 @@ func testIsUSBPortDarwin(t *testing.T) {
 			portName: "/dev/cu.usbserial-1420",
 			want:     true,
 		},
+		"wchusbserial (CH340)": {
+			portName: "/dev/cu.wchusbserial1440",
+			want:     true,
+		},
+		"SLAB_USBtoUART (CP210x)": {
+			portName: "/dev/cu.SLAB_USBtoUART",
+			want:     true,
+		},
 		"Bluetooth non-USB": {
 			portName: "/dev/cu.Bluetooth-PDA-Sync",
 			want:     false,

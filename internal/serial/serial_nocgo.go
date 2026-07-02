@@ -5,30 +5,14 @@ package serial
 
 import (
 	"fmt"
-	"runtime"
-	"strings"
 
 	"go.bug.st/serial"
 )
 
-// IsUSBPort detects if a serial port name corresponds to a USB device using heuristics.
-// The detection varies by platform:
-// - macOS: /dev/cu.usbmodem* or /dev/cu.usbserial*.
-// - Linux: /dev/ttyUSB* or /dev/ttyACM*.
-// - Windows: COM* (all COM ports are assumed USB).
-// - Other platforms: assumed USB by default.
+// IsUSBPort detects if a serial port name corresponds to a USB device using
+// the shared platform heuristic (see usbPortNameHeuristic in serial.go).
 func IsUSBPort(name string) bool {
-	switch runtime.GOOS {
-	case "darwin":
-		return strings.HasPrefix(name, "/dev/cu.usbmodem") || strings.HasPrefix(name, "/dev/cu.usbserial")
-	case "linux":
-		return strings.HasPrefix(name, "/dev/ttyUSB") || strings.HasPrefix(name, "/dev/ttyACM")
-	case "windows":
-		return strings.HasPrefix(name, "COM")
-	default:
-		// Assume USB on unknown platforms
-		return true
-	}
+	return usbPortNameHeuristic(name)
 }
 
 // ListPorts returns available serial ports.

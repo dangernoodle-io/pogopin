@@ -323,6 +323,84 @@ func TestHandleSerialReadWithClear(t *testing.T) {
 	assert.Equal(t, "", tc2.Text)
 }
 
+func TestCapLine(t *testing.T) {
+	tests := map[string]struct {
+		line      string
+		wantExact string // if set, exact expected output
+		wantMark  bool   // if true, expect a "…[+N bytes]" marker
+	}{
+		"short line unchanged": {
+			line:      "hello world",
+			wantExact: "hello world",
+		},
+		"invalid utf-8 replaced": {
+			line:      "before\xffafter",
+			wantExact: "before�after",
+		},
+		"oversized line truncated with marker": {
+			line:     strings.Repeat("a", maxLineBytes+100),
+			wantMark: true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := capLine(tt.line)
+			if tt.wantExact != "" {
+				assert.Equal(t, tt.wantExact, got)
+				return
+			}
+			if tt.wantMark {
+				assert.Contains(t, got, "…[+")
+				assert.Contains(t, got, "bytes]")
+				assert.LessOrEqual(t, len(got), maxLineBytes+32)
+			}
+		})
+	}
+}
+
+func TestBoundOutputWithinLimit(t *testing.T) {
+	lines := []string{"line 1", "line 2", "line 3"}
+	got := boundOutput(lines)
+	assert.Equal(t, "line 1\nline 2\nline 3", got)
+}
+
+func TestBoundOutputTotalTruncation(t *testing.T) {
+	// Each line is 100 bytes; force well over maxTotalBytes so only the
+	// most recent lines survive, with an omitted-lines marker prepended.
+	line := strings.Repeat("x", 100)
+	var lines []string
+	for i := 0; i < 400; i++ {
+		lines = append(lines, fmt.Sprintf("%s-%d", line, i))
+	}
+
+	got := boundOutput(lines)
+	assert.Contains(t, got, "[output truncated:")
+	assert.Contains(t, got, "earlier lines omitted]")
+	assert.Contains(t, got, "-399") // most recent line retained
+	assert.LessOrEqual(t, len(got), maxTotalBytes+128)
+}
+
+func TestHandleSerialReadCapsOversizedOutput(t *testing.T) {
+	setupTestPorts(t)
+
+	testMgr := serial.NewManager()
+	testMgr.AddToBuffer(strings.Repeat("a", maxLineBytes+50))
+	testMgr.AddToBuffer("before\xffafter")
+	testMgr.SetTestState(true, "test-port", 115200, nil)
+	session.InsertPort("test-port", session.NewPortSession(testMgr, "test-port", testMgr.Baud(), session.ModeReader))
+
+	req := mcp.CallToolRequest{}
+	result, err := handleSerialRead(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "…[+")
+	assert.Contains(t, tc.Text, "before�after")
+}
+
 func TestHandleSerialWriteRaw(t *testing.T) {
 	setupTestPorts(t)
 

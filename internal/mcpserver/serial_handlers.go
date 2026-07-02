@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"dangernoodle.io/pogopin/internal/esp"
 	"dangernoodle.io/pogopin/internal/flash"
@@ -13,6 +14,67 @@ import (
 	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 )
+
+// Bounds on handleSerialRead output to keep it well under the tool token cap.
+const (
+	maxLineBytes  = 512
+	maxTotalBytes = 32768
+)
+
+// capLine sanitizes invalid UTF-8 and truncates a line that exceeds
+// maxLineBytes on a valid rune boundary, appending a byte-count marker.
+func capLine(line string) string {
+	line = strings.ToValidUTF8(line, "�")
+	if len(line) <= maxLineBytes {
+		return line
+	}
+	cut := maxLineBytes
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+	dropped := len(line) - cut
+	return fmt.Sprintf("%s …[+%d bytes]", line[:cut], dropped)
+}
+
+// boundOutput sanitizes and caps each line, then caps the total joined size
+// by keeping the most recent lines that fit within maxTotalBytes.
+func boundOutput(lines []string) string {
+	capped := make([]string, len(lines))
+	for i, l := range lines {
+		capped[i] = capLine(l)
+	}
+
+	joined := strings.Join(capped, "\n")
+	if len(joined) <= maxTotalBytes {
+		return joined
+	}
+
+	var kept []string
+	size := 0
+	omitted := len(capped)
+	for i := len(capped) - 1; i >= 0; i-- {
+		lineSize := len(capped[i])
+		if len(kept) > 0 {
+			lineSize++ // account for the joining newline
+		}
+		if size+lineSize > maxTotalBytes {
+			omitted = i + 1
+			break
+		}
+		kept = append(kept, capped[i])
+		size += lineSize
+		omitted = i
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+
+	marker := fmt.Sprintf("[output truncated: %d earlier lines omitted]", omitted)
+	if len(kept) == 0 {
+		return marker
+	}
+	return marker + "\n" + strings.Join(kept, "\n")
+}
 
 func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	unlockHardwareTier()
@@ -133,7 +195,7 @@ func handleSerialRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 		output = filtered
 	}
 
-	return mcp.NewToolResultText(strings.Join(output, "\n")), nil
+	return mcp.NewToolResultText(boundOutput(output)), nil
 }
 
 func handleSerialStop(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
