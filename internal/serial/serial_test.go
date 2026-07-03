@@ -1022,6 +1022,7 @@ func TestFindSimilarPort(t *testing.T) {
 		name            string
 		originalPort    string
 		availablePorts  []PortInfo
+		knownPorts      map[string]bool
 		expectedSimilar string
 		listFnErr       error
 	}{
@@ -1083,6 +1084,40 @@ func TestFindSimilarPort(t *testing.T) {
 			expectedSimilar: "COM1",
 			listFnErr:       nil,
 		},
+		{
+			// BR-58: a prefix-matching port that already existed before the
+			// re-enumeration event (e.g. an unrelated board on the same
+			// USB-serial family) must not be mistaken for the flashed
+			// device's new port.
+			name:         "excludes pre-existing port even if prefix matches",
+			originalPort: "/dev/cu.usbmodem1101",
+			availablePorts: []PortInfo{
+				{Name: "/dev/cu.usbmodem1101"},
+				{Name: "/dev/cu.usbmodem2101"},
+			},
+			knownPorts: map[string]bool{
+				"/dev/cu.usbmodem1101": true,
+				"/dev/cu.usbmodem2101": true, // pre-existing unrelated board
+			},
+			expectedSimilar: "",
+			listFnErr:       nil,
+		},
+		{
+			name:         "matches a genuinely new port not in knownPorts",
+			originalPort: "/dev/cu.usbmodem1101",
+			availablePorts: []PortInfo{
+				// original port vanished (device reset), unrelated board
+				// still present, plus a genuinely new re-enumerated port
+				{Name: "/dev/cu.usbmodem2101"},
+				{Name: "/dev/cu.usbmodem3101"},
+			},
+			knownPorts: map[string]bool{
+				"/dev/cu.usbmodem1101": true,
+				"/dev/cu.usbmodem2101": true, // pre-existing unrelated board
+			},
+			expectedSimilar: "/dev/cu.usbmodem3101",
+			listFnErr:       nil,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1090,7 +1125,7 @@ func TestFindSimilarPort(t *testing.T) {
 			mockListFn := func() ([]PortInfo, error) {
 				return tt.availablePorts, tt.listFnErr
 			}
-			result := FindSimilarPort(tt.originalPort, mockListFn)
+			result := FindSimilarPort(tt.originalPort, mockListFn, tt.knownPorts)
 			assert.Equal(t, tt.expectedSimilar, result)
 		})
 	}

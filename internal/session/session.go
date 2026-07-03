@@ -42,6 +42,26 @@ type PortSession struct {
 	mode    PortMode
 	flasher esp.Flasher // cached flasher (only in ModeFlasher/ModePending)
 	timer   *time.Timer // deferred restart timer (only in ModePending)
+
+	// portsAtAcquire snapshots the set of system port names that existed at
+	// AcquireForFlasher time, before any reset-triggered re-enumeration. It
+	// lets FindSimilarPort tell a genuinely re-enumerated port (newly
+	// appeared) apart from an unrelated board's port that already existed
+	// and merely shares a USB-serial name prefix. Nil for sessions not
+	// created via AcquireForFlasher.
+	portsAtAcquire map[string]bool
+}
+
+// snapshotPortNames returns the current set of system port names, best-effort
+// (empty map on listPortsFn error).
+func snapshotPortNames() map[string]bool {
+	out := map[string]bool{}
+	if ports, err := listPortsFn(); err == nil {
+		for _, p := range ports {
+			out[p.Name] = true
+		}
+	}
+	return out
 }
 
 var (
@@ -123,8 +143,16 @@ func retryFlasherCreate(port string, opts *espflasher.FlasherOptions, sess *Port
 		}
 	}
 
-	// Try finding a re-enumerated port
-	newPort := serial.FindSimilarPort(port, listPortsFn)
+	// Try finding a re-enumerated port. Exclude ports that already existed at
+	// acquire time so we don't hijack an unrelated board's port that merely
+	// shares a USB-serial prefix (BR-58). portsAtAcquire is written under
+	// portsMu (AcquireForFlasher/AcquireForExternal) so read it under the
+	// same lock; the map itself is never mutated after being set, so the
+	// local copy is safe to use unlocked afterward.
+	portsMu.Lock()
+	knownPorts := sess.portsAtAcquire
+	portsMu.Unlock()
+	newPort := serial.FindSimilarPort(port, listPortsFn, knownPorts)
 	if newPort == "" || newPort == port {
 		return nil, err
 	}
@@ -162,8 +190,10 @@ func (b *BorrowedFlasher) Close() error {
 }
 
 // WaitForPort polls for port availability by file existence or re-enumeration.
+// knownPorts, when non-nil, excludes ports that already existed before the
+// wait began from the re-enumeration match (see FindSimilarPort / BR-58).
 // Returns the port name if found, or "" on timeout.
-func WaitForPort(port string, timeout time.Duration) string {
+func WaitForPort(port string, timeout time.Duration, knownPorts map[string]bool) string {
 	deadline := time.Now().Add(timeout)
 	for {
 		// Check if port exists
@@ -172,7 +202,7 @@ func WaitForPort(port string, timeout time.Duration) string {
 		}
 
 		// Check for re-enumerated port
-		if p := serial.FindSimilarPort(port, listPortsFn); p != "" {
+		if p := serial.FindSimilarPort(port, listPortsFn, knownPorts); p != "" {
 			return p
 		}
 
@@ -205,6 +235,14 @@ func OpenForFlasher(portName string) func(name string, mode *goSerial.Mode) (goS
 // The factory handles caching: if a flasher was deferred, it wraps it as borrowed; otherwise,
 // it returns a real flasher from newFlasherFactory.
 func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
+	// Snapshot the ports that exist right now, before any reset-triggered
+	// re-enumeration happens under this acquire. Used by FindSimilarPort /
+	// WaitForPort to avoid matching an unrelated board's pre-existing port
+	// that merely shares a USB-serial name prefix (BR-58). Done before
+	// taking portsMu — snapshotPortNames performs serial enumeration
+	// (listPortsFn), which must never happen while holding the lock.
+	portNames := snapshotPortNames()
+
 	portsMu.Lock()
 	defer func() {
 		snap := snapshotPorts()
@@ -236,17 +274,54 @@ func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
 		ports[port] = sess
 	}
 
+	sess.portsAtAcquire = portNames
+
 	factory := func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
-		if sess.flasher != nil {
+		// Read the cached flasher pointer under the lock, then probe/close it
+		// (serial I/O) without holding portsMu — other goroutines mutate
+		// sess.flasher under the same lock (e.g. BorrowedFlasher.onReturn).
+		portsMu.Lock()
+		cached := sess.flasher
+		portsMu.Unlock()
+
+		var probeErr error
+		if cached != nil {
+			// Probe the cached flasher's connection before reusing it. If the
+			// board reset/re-enumerated since it was cached, the handle is
+			// dead and Reset()/register ops would silently no-op (BR-57).
+			// FlashID() is a cheap, side-effect-free round trip (SPI flash ID
+			// read) that requires live communication with the bootloader stub
+			// without resetting the device.
+			_, _, probeErr = cached.FlashID()
+		}
+
+		if cached != nil {
+			// Claim the cached flasher for this call (whether we're about to
+			// reuse or discard it). Re-verify sess.flasher is still the same
+			// pointer — another goroutine may have swapped it in while we
+			// were probing unlocked.
+			portsMu.Lock()
+			if sess.flasher == cached {
+				sess.flasher = nil
+			} else {
+				cached = nil
+			}
+			portsMu.Unlock()
+
+			if cached != nil && probeErr != nil {
+				_ = cached.Close()
+				cached = nil
+			}
+		}
+
+		if cached != nil {
 			// Flush stale data from serial buffer and SLIP reader before reuse.
 			// ReadFlash's raw block protocol can leave leftover bytes that
 			// corrupt subsequent command responses.
-			sess.flasher.FlushInput()
+			cached.FlushInput()
 			// Return borrowed flasher wrapping the cached one
-			f := sess.flasher
-			sess.flasher = nil
 			return &BorrowedFlasher{
-				Flasher: f,
+				Flasher: cached,
 				onReturn: func(flasher esp.Flasher) {
 					portsMu.Lock()
 					sess.flasher = flasher
@@ -291,10 +366,11 @@ func expireSession(sess *PortSession, port string) {
 		_ = sess.flasher.Close()
 		sess.flasher = nil
 	}
+	knownPorts := sess.portsAtAcquire
 
 	// Wait for port availability (USB CDC may need time after close)
 	portsMu.Unlock()
-	foundPort := WaitForPort(port, 3*time.Second)
+	foundPort := WaitForPort(port, 3*time.Second, knownPorts)
 	portsMu.Lock()
 
 	// Another goroutine may have acquired the session while we waited
@@ -355,10 +431,11 @@ func ReleaseFlasherImmediate(sess *PortSession, port string) string {
 		_ = sess.flasher.Close()
 		sess.flasher = nil
 	}
+	knownPorts := sess.portsAtAcquire
 	portsMu.Unlock()
 
 	// Wait for port (outside lock)
-	foundPort := WaitForPort(port, 3*time.Second)
+	foundPort := WaitForPort(port, 3*time.Second, knownPorts)
 	if foundPort == "" {
 		return ""
 	}
@@ -391,6 +468,11 @@ func ReleaseFlasherImmediate(sess *PortSession, port string) string {
 
 // AcquireForExternal prepares a port for an external command. Returns the session.
 func AcquireForExternal(port string) *PortSession {
+	// Snapshot ports before taking portsMu — see AcquireForFlasher. Used by
+	// ReleaseExternal's re-enum matching to exclude pre-existing ports
+	// (BR-58), same protection AcquireForFlasher already has.
+	portNames := snapshotPortNames()
+
 	portsMu.Lock()
 	defer func() {
 		snap := snapshotPorts()
@@ -427,12 +509,17 @@ func AcquireForExternal(port string) *PortSession {
 	}
 
 	sess.mode = ModeExternal
+	sess.portsAtAcquire = portNames
 	return sess
 }
 
 // ReleaseExternal restarts the reader after an external command. Returns the new port name if re-enumerated.
 func ReleaseExternal(sess *PortSession, port string) string {
-	foundPort := WaitForPort(port, 3*time.Second)
+	portsMu.Lock()
+	knownPorts := sess.portsAtAcquire
+	portsMu.Unlock()
+
+	foundPort := WaitForPort(port, 3*time.Second, knownPorts)
 	if foundPort == "" {
 		return ""
 	}
@@ -522,8 +609,9 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 			sess.flasher = nil
 		}
 		// Restart reader
+		knownPorts := sess.portsAtAcquire
 		portsMu.Unlock()
-		foundPort := WaitForPort(resolvedPort, 0)
+		foundPort := WaitForPort(resolvedPort, 0, knownPorts)
 		portsMu.Lock()
 		if foundPort != "" {
 			_ = sess.mgr.Start(foundPort, sess.baud)

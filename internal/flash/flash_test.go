@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"dangernoodle.io/pogopin/internal/serial"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -282,7 +283,7 @@ func TestFlashPortReenumeration(t *testing.T) {
 	defer func() { retryDelays = origRetry }()
 
 	origFindFn := findSimilarPortFn
-	findSimilarPortFn = func(port string) string {
+	findSimilarPortFn = func(port string, knownPorts map[string]bool) string {
 		if port == "test-device-port" {
 			return "test-device-new-port"
 		}
@@ -330,7 +331,7 @@ func TestFlashPortReenumerationNoMatch(t *testing.T) {
 	defer func() { retryDelays = origRetry }()
 
 	origFindFn := findSimilarPortFn
-	findSimilarPortFn = func(port string) string {
+	findSimilarPortFn = func(port string, knownPorts map[string]bool) string {
 		return "" // No match found
 	}
 	defer func() { findSimilarPortFn = origFindFn }()
@@ -356,6 +357,53 @@ func TestFlashPortReenumerationNoMatch(t *testing.T) {
 	assert.True(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "Warning: failed to restart serial after 2 attempts")
 	assert.Equal(t, "test-device-port", mgr.PortName())
+}
+
+// TestFlashSnapshotsKnownPortsBeforeExternalOp verifies that Flash() snapshots
+// the currently-listed ports (via listPortsFn) before running the external
+// command, and passes that snapshot to findSimilarPortFn as knownPorts
+// (BR-58) — so a re-enumeration match can be distinguished from an unrelated,
+// pre-existing board's port.
+func TestFlashSnapshotsKnownPortsBeforeExternalOp(t *testing.T) {
+	origRetry := retryDelays
+	retryDelays = []time.Duration{time.Millisecond}
+	defer func() { retryDelays = origRetry }()
+
+	origListPortsFn := listPortsFn
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{{Name: "test-device-port"}, {Name: "unrelated-board-port"}}, nil
+	}
+	defer func() { listPortsFn = origListPortsFn }()
+
+	var gotKnownPorts map[string]bool
+	origFindFn := findSimilarPortFn
+	findSimilarPortFn = func(port string, knownPorts map[string]bool) string {
+		gotKnownPorts = knownPorts
+		return ""
+	}
+	defer func() { findSimilarPortFn = origFindFn }()
+
+	mgr := &mockManager{
+		portName: "test-device-port",
+		baud:     115200,
+		running:  true,
+	}
+
+	_, err := Flash(&wrappedManager{
+		original: mgr,
+		stopFn: func() error {
+			mgr.running = false
+			return nil
+		},
+		startFn: func(port string, baud int) error {
+			return fmt.Errorf("port not found")
+		},
+	}, "echo", []string{"test"}, nil)
+
+	require.NoError(t, err)
+	require.NotNil(t, gotKnownPorts)
+	assert.True(t, gotKnownPorts["test-device-port"])
+	assert.True(t, gotKnownPorts["unrelated-board-port"])
 }
 
 // TestFlashOutputLinesLimit verifies that Flash() correctly limits output to the last N lines

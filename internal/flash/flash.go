@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"dangernoodle.io/pogopin/internal/serial"
 )
 
 var (
@@ -24,10 +26,17 @@ var retryDelays = []time.Duration{
 	1600 * time.Millisecond,
 }
 
-var findSimilarPortFn func(string) string
+// findSimilarPortFn locates a re-enumerated port after an external flash
+// command. knownPorts excludes ports that already existed before the flash
+// op — see serial.FindSimilarPort — so a coincidental prefix match against an
+// unrelated board isn't mistaken for the flashed device re-enumerating (BR-58).
+var findSimilarPortFn func(port string, knownPorts map[string]bool) string
+
+// listPortsFn enumerates system ports; overridable for testing.
+var listPortsFn = serial.ListPorts
 
 // SetFindSimilarPortFn sets the callback used to find re-enumerated ports after flash.
-func SetFindSimilarPortFn(fn func(string) string) {
+func SetFindSimilarPortFn(fn func(port string, knownPorts map[string]bool) string) {
 	findSimilarPortFn = fn
 }
 
@@ -90,6 +99,18 @@ func Flash(mgr PortManager, command string, args []string, opts *Options) (Resul
 
 	if mgr.IsRunning() {
 		_ = mgr.Stop()
+	}
+
+	// Snapshot the ports that exist right now, before the external flash
+	// command runs and potentially resets/re-enumerates the device. Used
+	// below to tell a genuinely re-enumerated port apart from an unrelated
+	// board's pre-existing port that merely shares a USB-serial prefix.
+	var knownPorts map[string]bool
+	if ports, err := listPortsFn(); err == nil {
+		knownPorts = make(map[string]bool, len(ports))
+		for _, p := range ports {
+			knownPorts[p.Name] = true
+		}
 	}
 
 	// Compile regex filter before running command if specified
@@ -157,7 +178,7 @@ func Flash(mgr PortManager, command string, args []string, opts *Options) (Resul
 		}
 		// Try to find the re-enumerated port
 		if findSimilarPortFn != nil {
-			if newPort := findSimilarPortFn(currentPort); newPort != "" {
+			if newPort := findSimilarPortFn(currentPort, knownPorts); newPort != "" {
 				currentPort = newPort
 			}
 		}

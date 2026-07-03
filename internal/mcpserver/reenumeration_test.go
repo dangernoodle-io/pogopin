@@ -37,11 +37,16 @@ func TestHandleFlashNewPort(t *testing.T) {
 		return mgr
 	})
 
-	// Return a different port to simulate re-enumeration.
+	// First call (AcquireForFlasher's portsAtAcquire snapshot) sees only the
+	// original port; subsequent calls (post-reset re-enumeration probing)
+	// see the new port — simulating the device re-enumerating mid-flash.
+	var listCalls int
 	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
-		return []serial.PortInfo{
-			{Name: "/dev/ttyUSB1"},
-		}, nil
+		listCalls++
+		if listCalls == 1 {
+			return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
+		}
+		return []serial.PortInfo{{Name: "/dev/ttyUSB1"}}, nil
 	})
 
 	tmpDir := t.TempDir()
@@ -92,10 +97,15 @@ func TestHandleEraseNewPort(t *testing.T) {
 		return mgr
 	})
 
+	// First call (AcquireForFlasher's portsAtAcquire snapshot) sees only the
+	// original port; subsequent calls see the new, re-enumerated port.
+	var listCalls int
 	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
-		return []serial.PortInfo{
-			{Name: "/dev/ttyUSB1"},
-		}, nil
+		listCalls++
+		if listCalls == 1 {
+			return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
+		}
+		return []serial.PortInfo{{Name: "/dev/ttyUSB1"}}, nil
 	})
 
 	req := mcp.CallToolRequest{}
@@ -135,10 +145,15 @@ func TestHandleResetNewPort(t *testing.T) {
 		return mgr
 	})
 
+	// First call (AcquireForFlasher's portsAtAcquire snapshot) sees only the
+	// original port; subsequent calls see the new, re-enumerated port.
+	var listCalls int
 	session.SetListPortsFn(func() ([]serial.PortInfo, error) {
-		return []serial.PortInfo{
-			{Name: "/dev/ttyUSB1"},
-		}, nil
+		listCalls++
+		if listCalls == 1 {
+			return []serial.PortInfo{{Name: "/dev/ttyUSB0"}}, nil
+		}
+		return []serial.PortInfo{{Name: "/dev/ttyUSB1"}}, nil
 	})
 
 	req := mcp.CallToolRequest{}

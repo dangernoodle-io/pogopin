@@ -139,14 +139,14 @@ func TestWaitForPortExistsImmediately(t *testing.T) {
 	defer os.Remove(tmpfile.Name())
 	tmpfile.Close()
 
-	result := WaitForPort(tmpfile.Name(), 5*time.Second)
+	result := WaitForPort(tmpfile.Name(), 5*time.Second, nil)
 	assert.Equal(t, tmpfile.Name(), result)
 }
 
 func TestWaitForPortTimeout(t *testing.T) {
 	setupFastWaitForPort(t)
 
-	result := WaitForPort("/nonexistent/port/path", 50*time.Millisecond)
+	result := WaitForPort("/nonexistent/port/path", 50*time.Millisecond, nil)
 	assert.Equal(t, "", result)
 }
 
@@ -170,7 +170,7 @@ func TestWaitForPortReenumerates(t *testing.T) {
 		return []serial.PortInfo{}, nil
 	}
 
-	result := WaitForPort(originalPort, 100*time.Millisecond)
+	result := WaitForPort(originalPort, 100*time.Millisecond, nil)
 	assert.Equal(t, reenumeratedPort, result)
 }
 
@@ -528,6 +528,60 @@ func TestAcquireForFlasherReusesCachedFlasher(t *testing.T) {
 	borrowed, ok := f.(*BorrowedFlasher)
 	require.True(t, ok)
 	assert.Equal(t, mock, borrowed.Flasher)
+	assert.True(t, mock.flashIDCalled, "factory should probe the cached flasher's liveness before reuse (BR-57)")
+	assert.False(t, mock.closeCalled, "a live cached flasher must not be closed")
+}
+
+// TestAcquireForFlasherDiscardsDeadCachedFlasher verifies BR-57: a cached
+// flasher whose liveness probe (FlashID) fails is treated as stale — e.g. the
+// board reset/re-enumerated since it was cached — and is closed and
+// discarded rather than reused, falling through to a fresh flasher create.
+func TestAcquireForFlasherDiscardsDeadCachedFlasher(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+	setupTestManagersFunc(t)
+	setupTestIsUSBPort(t)
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	deadCached := &mockFlasher{chipNameVal: "ESP32-dead", flashIDErr: fmt.Errorf("sync timeout")}
+	freshMock := &mockFlasher{chipNameVal: "ESP32-fresh"}
+
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return freshMock, nil
+	}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:     newManagerFunc(1000),
+		port:    "/dev/test",
+		baud:    115200,
+		mode:    ModePending,
+		flasher: deadCached,
+	}
+	portsMu.Unlock()
+
+	sess, factory := AcquireForFlasher("/dev/test")
+	require.NotNil(t, sess)
+
+	f, err := factory("/dev/test", &espflasher.FlasherOptions{})
+	require.NoError(t, err)
+
+	borrowed, ok := f.(*BorrowedFlasher)
+	require.True(t, ok, "factory should return BorrowedFlasher")
+	assert.Equal(t, freshMock, borrowed.Flasher, "should have discarded the dead cached flasher and created a fresh one")
+	assert.True(t, deadCached.flashIDCalled, "liveness probe should have been attempted on the cached flasher")
+	assert.True(t, deadCached.closeCalled, "dead cached flasher should be closed")
+
+	portsMu.Lock()
+	assert.Nil(t, sess.flasher, "dead cached flasher reference should be cleared")
+	portsMu.Unlock()
 }
 
 func TestAcquireForFlasherUsesRealFactory(t *testing.T) {
@@ -714,6 +768,87 @@ func TestAcquireForExternalCreatesNew(t *testing.T) {
 	assert.Equal(t, ModeExternal, sess.mode)
 }
 
+// TestAcquireForExternalSetsPortsAtAcquire verifies the HIGH finding fix:
+// AcquireForExternal must populate portsAtAcquire (like AcquireForFlasher
+// does) so ReleaseExternal's re-enumeration match excludes ports that
+// already existed at acquire time (BR-58 protection for the flash_external
+// path).
+func TestAcquireForExternalSetsPortsAtAcquire(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	unrelatedPort := t.TempDir() + "/cu.usbmodem2001"
+	origListPorts := listPortsFn
+	t.Cleanup(func() { listPortsFn = origListPorts })
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{{Name: unrelatedPort}}, nil
+	}
+
+	sess := AcquireForExternal("/dev/test")
+
+	portsMu.Lock()
+	knownPorts := sess.portsAtAcquire
+	portsMu.Unlock()
+
+	require.NotNil(t, knownPorts, "AcquireForExternal must snapshot portsAtAcquire")
+	assert.True(t, knownPorts[unrelatedPort], "pre-existing port must be recorded in the snapshot")
+}
+
+// TestReleaseExternalIgnoresPreExistingUnrelatedPort verifies BR-58 for the
+// flash_external path (the HIGH finding): when the acquired port vanishes
+// and only an unrelated board's pre-existing port remains, ReleaseExternal's
+// WaitForPort must not hijack it.
+func TestReleaseExternalIgnoresPreExistingUnrelatedPort(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupFastWaitForPort(t)
+
+	// Use paths under a fresh temp dir (guaranteed not to exist on disk) so
+	// WaitForPort's os.Stat check can't short-circuit by hitting a real
+	// device node that happens to share this name on the test machine.
+	base := t.TempDir()
+	originalPort := base + "/cu.usbmodem1101"
+	unrelatedBoardPort := base + "/cu.usbmodem1102"
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	// At acquire time, the unrelated board's port already exists.
+	origListPorts := listPortsFn
+	t.Cleanup(func() { listPortsFn = origListPorts })
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{
+			{Name: originalPort},
+			{Name: unrelatedBoardPort},
+		}, nil
+	}
+
+	sess := AcquireForExternal(originalPort)
+
+	// The original port vanishes; only the pre-existing unrelated port remains.
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{{Name: unrelatedBoardPort}}, nil
+	}
+
+	newPort := ReleaseExternal(sess, originalPort)
+
+	assert.Equal(t, "", newPort, "must not hijack the unrelated board's pre-existing port")
+	assert.Equal(t, ModeExternal, sess.mode, "session should remain unreleased rather than adopt the wrong port")
+}
+
 func TestReleaseExternalRestartsReader(t *testing.T) {
 	setupTestPorts(t)
 	setupFastWaitForPort(t)
@@ -868,18 +1003,26 @@ func TestFactoryTriesFindSimilarPortOnSyncError(t *testing.T) {
 		return realMock, nil
 	}
 
-	// Mock ListPorts to return the new port
+	// At acquire time only the original port is enumerated — this becomes the
+	// portsAtAcquire snapshot (BR-58).
 	origListPorts := listPortsFn
 	t.Cleanup(func() { listPortsFn = origListPorts })
 
 	listPortsFn = func() ([]serial.PortInfo, error) {
 		return []serial.PortInfo{
-			{Name: newPort},
+			{Name: originalPort},
 		}, nil
 	}
 
 	sess, factory := AcquireForFlasher(originalPort)
 	require.NotNil(t, sess)
+
+	// The device re-enumerates: newPort newly appears, originalPort is gone.
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{
+			{Name: newPort},
+		}, nil
+	}
 
 	f, err := factory(originalPort, &espflasher.FlasherOptions{})
 	require.NoError(t, err)
@@ -896,6 +1039,66 @@ func TestFactoryTriesFindSimilarPortOnSyncError(t *testing.T) {
 	assert.True(t, exists, "new port should be in ports map")
 	assert.False(t, oldPortExists, "original port should be removed from ports map")
 	assert.Equal(t, newPort, updatedSess.port)
+}
+
+// TestFactoryIgnoresPreExistingUnrelatedPortOnSyncError verifies BR-58: when
+// the board's port vanishes and only an unrelated board's port (already
+// present at acquire time, sharing the same USB-serial prefix) remains,
+// retryFlasherCreate must not hijack it — it should give up rather than
+// start monitoring the wrong device.
+func TestFactoryIgnoresPreExistingUnrelatedPortOnSyncError(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupTestFlasherFactory(t)
+	setupTestIsUSBPort(t)
+	setupFastSyncRetry(t)
+
+	originalPort := "/dev/cu.usbmodem1101"
+	unrelatedBoardPort := "/dev/cu.usbmodem1102"
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return nil, &espflasher.SyncError{Attempts: 7}
+	}
+
+	// At acquire time, the unrelated board's port already exists.
+	origListPorts := listPortsFn
+	t.Cleanup(func() { listPortsFn = origListPorts })
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{
+			{Name: originalPort},
+			{Name: unrelatedBoardPort},
+		}, nil
+	}
+
+	sess, factory := AcquireForFlasher(originalPort)
+	require.NotNil(t, sess)
+
+	// After the original port vanishes, only the pre-existing unrelated
+	// board's port is left — it must not be treated as a re-enumeration.
+	listPortsFn = func() ([]serial.PortInfo, error) {
+		return []serial.PortInfo{
+			{Name: unrelatedBoardPort},
+		}, nil
+	}
+
+	_, err := factory(originalPort, &espflasher.FlasherOptions{})
+	require.Error(t, err, "should give up rather than match the unrelated board's pre-existing port")
+
+	portsMu.Lock()
+	_, hijacked := ports[unrelatedBoardPort]
+	_, originalStillPresent := ports[originalPort]
+	portsMu.Unlock()
+
+	assert.False(t, hijacked, "unrelated board's port must not be adopted into the session")
+	assert.True(t, originalStillPresent, "original port mapping should be left untouched")
 }
 
 func TestFactoryNoRetryOnNonSyncError(t *testing.T) {
