@@ -15,18 +15,18 @@ Detect it, don't assume:
 - **PlatformIO** — `platformio.ini`; `pio run` (`-e <env>` per board). Prefer `pio` over `arduino-cli` for Arduino too.
 - **Arduino / raw CMake** — only if that's what the repo uses.
 
-When a repo has both a Makefile and idf.py/pio, the Makefile is usually the intended entry point — but read it, because some have gotchas (see below) and may need a clean fallback.
+When a repo has both a Makefile and idf.py/pio, the Makefile is usually the intended entry point — but read it: some have gotchas (below) and may need a clean fallback.
 
 ## Clean-build discipline — the incremental-build trap
 
-Incremental builds **silently reuse stale artifacts** after certain changes, producing a green build that doesn't reflect your source. A passing incremental build after any of these is a **possible false pass** — clean-build to trust it, or trust CI:
+Incremental builds **silently reuse stale artifacts** after certain changes, producing a green build that doesn't reflect your source. A passing incremental build after any of these is a **possible false pass** — clean-build or trust CI:
 
 - **Renamed / moved files** — CMake/Make dependency tracking misses them; a native `make test`/build target can false-pass after a rename — clean-build or trust CI.
 - **Edited SDK / component source or headers** that the build graph doesn't track — the change isn't picked up until the old objects are removed.
 - **`sdkconfig.defaults` edited** — this does **not** regenerate `sdkconfig`. The old `sdkconfig` persists and your Kconfig change is ignored until you delete `sdkconfig` (or `idf.py fullclean`) and rebuild.
 - **Partition table, `idf_component.yml`/managed deps, or toolchain version changes.**
 
-Clean commands by system: `idf.py fullclean` (or delete `build/`), `make clean` (and check the Makefile actually cleans what changed — some don't), `pio run -t clean`. When unsure whether a target rebuilds what changed, do the clean build and **flag the Makefile/target as a gotcha** so it can be fixed.
+Clean commands: `idf.py fullclean` (or delete `build/`), `make clean` (check the Makefile actually cleans what changed — some don't), `pio run -t clean`. When unsure whether a target rebuilds what changed, clean-build and **flag the Makefile/target as a gotcha**.
 
 ## Verify the config actually applied
 
