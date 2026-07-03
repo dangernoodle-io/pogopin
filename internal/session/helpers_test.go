@@ -65,6 +65,7 @@ type mockFlasher struct {
 	flashIDErr          error
 	flashIDMfg          uint8
 	flashIDDev          uint16
+	flashIDCalled       bool
 	chipTypVal          espflasher.ChipType
 	chipNameVal         string
 	bootloaderOffsetVal uint32
@@ -107,6 +108,7 @@ func (m *mockFlasher) EraseRegion(offset, size uint32) error {
 }
 
 func (m *mockFlasher) FlashID() (uint8, uint16, error) {
+	m.flashIDCalled = true
 	return m.flashIDMfg, m.flashIDDev, m.flashIDErr
 }
 

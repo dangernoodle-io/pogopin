@@ -356,9 +356,15 @@ func portNamePrefix(name string) string {
 }
 
 // FindSimilarPort scans available ports for one matching the same name prefix
-// as portName but with a different numeric suffix. Returns the new port name,
-// or empty string if none found.
-func FindSimilarPort(portName string, listFn func() ([]PortInfo, error)) string {
+// as portName but with a different numeric suffix. knownPorts is the set of
+// port names that existed before the re-enumeration event being probed for
+// (e.g. a snapshot taken at flasher-acquire time); a prefix match that was
+// already present in knownPorts is skipped since it did not newly appear and
+// is therefore not a re-enumeration of portName — it's an unrelated device
+// that happened to share the same USB-serial prefix. Pass a nil or empty map
+// to disable this exclusion (matches legacy behavior). Returns the new port
+// name, or empty string if none found.
+func FindSimilarPort(portName string, listFn func() ([]PortInfo, error), knownPorts map[string]bool) string {
 	prefix := portNamePrefix(portName)
 	if prefix == "" {
 		return ""
@@ -368,9 +374,13 @@ func FindSimilarPort(portName string, listFn func() ([]PortInfo, error)) string 
 		return ""
 	}
 	for _, p := range ports {
-		if p.Name != portName && strings.HasPrefix(p.Name, prefix) {
-			return p.Name
+		if p.Name == portName || !strings.HasPrefix(p.Name, prefix) {
+			continue
 		}
+		if knownPorts[p.Name] {
+			continue
+		}
+		return p.Name
 	}
 	return ""
 }
