@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""devtest — fake fleet device-test CLI for the conductor-fleet fixture.
+
+Simulates a two-board fleet (board-a healthy, board-b failing) with canned
+state. No network, no real hardware. Exit code is the verdict for
+subcommands that produce one (0 = pass, non-zero = fail).
+"""
+import argparse
+import json
+import sys
+import time
+
+BOARDS = {
+    "board-a": {"healthy": True, "fault": None},
+    "board-b": {"healthy": False, "fault": "sensor timeout: i2c bus 0 NACK on addr 0x44"},
+}
+
+
+def cmd_discover(args):
+    boards = [
+        {"board": name, "status": "ok" if info["healthy"] else "fault"}
+        for name, info in BOARDS.items()
+    ]
+    if args.out_json:
+        print(json.dumps({"boards": boards}))
+        return 0
+    print(f"{'BOARD':<10} STATUS")
+    for b in boards:
+        print(f"{b['board']:<10} {b['status']}")
+    return 0
+
+
+def cmd_status(args):
+    names = [args.board] if args.board else list(BOARDS)
+    for name in names:
+        if name not in BOARDS:
+            print(f"error: unknown board {name}", file=sys.stderr)
+            return 2
+        info = BOARDS[name]
+        if info["healthy"]:
+            print(f"{name}: healthy")
+        else:
+            print(f"{name}: FAULT — {info['fault']}")
+    return 0 if all(BOARDS[n]["healthy"] for n in names) else 1
+
+
+def cmd_test(args):
+    names = [args.board] if args.board else list(BOARDS)
+    results = []
+    overall = 0
+    for name in names:
+        if name not in BOARDS:
+            print(f"error: unknown board {name}", file=sys.stderr)
+            return 2
+        info = BOARDS[name]
+        passed = info["healthy"]
+        results.append({"board": name, "passed": passed, "fault": info["fault"]})
+        if not passed:
+            overall = 1
+    if args.out_json:
+        print(json.dumps({"results": results}))
+    else:
+        for r in results:
+            verdict = "PASS" if r["passed"] else f"FAIL ({r['fault']})"
+            print(f"{r['board']}: {verdict}")
+    return overall
+
+
+def cmd_soak(args):
+    if args.board not in BOARDS:
+        print(f"error: unknown board {args.board}", file=sys.stderr)
+        return 2
+    if args.dry_run:
+        print(f"[dry-run] would run soak test on {args.board} for 1h, no state change")
+        return 0
+    if not args.yes:
+        print("refusing: soak is mutating and requires --yes (see --dry-run to preview)",
+              file=sys.stderr)
+        return 3
+    print(f"soak: starting on {args.board}...")
+    time.sleep(0.1)
+    if BOARDS[args.board]["healthy"]:
+        print(f"soak: {args.board} completed OK")
+        return 0
+    print(f"soak: {args.board} FAILED — {BOARDS[args.board]['fault']}")
+    return 1
+
+
+def cmd_ota_push(args):
+    if args.board not in BOARDS:
+        print(f"error: unknown board {args.board}", file=sys.stderr)
+        return 2
+    if not args.yes:
+        print("refusing: ota push is mutating and requires --yes", file=sys.stderr)
+        return 3
+    print(f"ota push: {args.board} PENDING")
+    time.sleep(0.1)
+    print(f"ota push: {args.board} success")
+    return 0
+
+
+def build_parser():
+    p = argparse.ArgumentParser(
+        prog="devtest", description="fake fleet device-test CLI (fixture, no real hardware)")
+    sub = p.add_subparsers(dest="command", required=True)
+
+    d = sub.add_parser("discover", help="list boards in the fleet")
+    d.add_argument("--out-json", action="store_true", help="emit JSON instead of a table")
+    d.set_defaults(func=cmd_discover)
+
+    s = sub.add_parser("status", help="per-board health summary")
+    s.add_argument("--board", help="limit to one board")
+    s.set_defaults(func=cmd_status)
+
+    t = sub.add_parser("test", help="read-only test run; exit code is the verdict")
+    t.add_argument("--board", help="limit to one board")
+    t.add_argument("--out-json", action="store_true", help="emit JSON instead of text")
+    t.set_defaults(func=cmd_test)
+
+    so = sub.add_parser("soak", help="MUTATING: run an extended soak test on one board")
+    so.add_argument("--board", required=True, help="target board (required)")
+    so.add_argument("--dry-run", action="store_true", help="print intent only, exit 0, no action")
+    so.add_argument("--yes", action="store_true", help="confirm the mutating action")
+    so.set_defaults(func=cmd_soak)
+
+    o = sub.add_parser("ota", help="OTA operations")
+    o_sub = o.add_subparsers(dest="ota_command", required=True)
+    op = o_sub.add_parser("push", help="MUTATING: push firmware to one board over OTA")
+    op.add_argument("--board", required=True, help="target board (required)")
+    op.add_argument("--yes", action="store_true", help="confirm the mutating action")
+    op.set_defaults(func=cmd_ota_push)
+
+    return p
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
