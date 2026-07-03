@@ -17,6 +17,10 @@ Detect it, don't assume:
 
 When a repo has both a Makefile and idf.py/pio, the Makefile is usually the intended entry point — but read it: some have gotchas (below) and may need a clean fallback.
 
+## Build driver ≠ analysis toolchain
+
+The tool that *builds* and the tools that *analyze* are independent. A PlatformIO project still builds ESP-IDF underneath and emits a `.elf` + linker `.map` — so run ESP-IDF static-analysis tools against that output regardless of the build driver: `idf.py size`/`size-components`, or `nm`/`objdump`/`*-size` on the `.elf`, or parse the `.map`. Never refuse ESP-IDF analysis just because the build is `pio`.
+
 ## Clean-build discipline — the incremental-build trap
 
 Incremental builds **silently reuse stale artifacts** after certain changes, producing a green build that doesn't reflect your source. A passing incremental build after any of these is a **possible false pass** — clean-build or trust CI:
@@ -38,6 +42,10 @@ When someone changed a `Kconfig`/`sdkconfig.defaults`/build flag and asks "did i
 - **Sizes** — flash + RAM/IRAM usage (`idf.py size` / `pio run` summary / `avr-size` for AVR). Call out anything near a partition or RAM budget.
 - **Warnings** — surface them; don't bury a warning in a wall of output. Redirect verbose build logs to a file and report the tail plus the size table.
 - **Whether it was a clean or incremental build** — say which, so the reader knows how much to trust it.
+
+## Footprint regressions — attribute statically, not at runtime
+
+For "where did the RAM/flash go?", reach for **static** attribution, not runtime per-task tracking (which perturbs the system, can deadlock, and often can't be instrumented). Use `idf.py size-components` for a per-component breakdown, and **diff the linker map / size output between the old and new build** to attribute the delta per component — precise, no perturbation, pointing straight at the suspect components. Report the per-component *delta*, not just the new total.
 
 ## Build matrices
 
