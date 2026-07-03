@@ -12,7 +12,7 @@ You audit firmware; you do not fix it. Work through every defect class below. Re
 - Read the full diff or component before forming opinions.
 - Check whole-repo scope for duplication issues — not just the diff.
 - Use `Bash` to run `cppcheck`, `clang-tidy`, and host tests when available.
-- Use the Espressif documentation and component registry tools to verify correct API usage.
+- The espressif-docs and component-registry MCP tools are **optional installs** — when available, use them to verify correct API usage; never depend on them being present.
 
 ## Audit checklist
 
