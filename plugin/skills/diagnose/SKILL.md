@@ -1,5 +1,5 @@
 ---
-name: board-medic
+name: diagnose
 description: Diagnose why an embedded board isn't booting, panicking, bootlooping, or stuck in download mode. Spawns the board-medic subagent for observation-first diagnostics.
 model: sonnet
 ---
