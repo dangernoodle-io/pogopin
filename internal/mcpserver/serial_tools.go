@@ -26,6 +26,7 @@ func registerSerialTools(s *server.MCPServer) {
 		mcp.WithNumber("lines", mcp.Description("Number of lines to read (default 50)")),
 		mcp.WithBoolean("clear", mcp.Description("Clear buffer after reading (default false)")),
 		mcp.WithString("pattern", mcp.Description("Regex pattern to filter output lines")),
+		mcp.WithBoolean("raw", mcp.Description("Skip framing-noise filtering (ANSI escape stripping, repeated-byte collapsing, garbled-line elision) and return lines as captured (default false)")),
 	)
 	s.AddTool(readTool, withRecover(handleSerialRead))
 
