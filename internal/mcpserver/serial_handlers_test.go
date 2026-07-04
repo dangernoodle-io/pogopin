@@ -361,7 +361,7 @@ func TestCapLine(t *testing.T) {
 
 func TestBoundOutputWithinLimit(t *testing.T) {
 	lines := []string{"line 1", "line 2", "line 3"}
-	got := boundOutput(lines)
+	got := boundOutput(lines, false)
 	assert.Equal(t, "line 1\nline 2\nline 3", got)
 }
 
@@ -374,11 +374,154 @@ func TestBoundOutputTotalTruncation(t *testing.T) {
 		lines = append(lines, fmt.Sprintf("%s-%d", line, i))
 	}
 
-	got := boundOutput(lines)
+	// raw:true exercises boundOutput's total-cap trimming directly; each
+	// line here is a repeated byte, which sanitizeLine would collapse to a
+	// short marker (see TestSanitizeLine), never reaching maxTotalBytes.
+	got := boundOutput(lines, true)
 	assert.Contains(t, got, "[output truncated:")
 	assert.Contains(t, got, "earlier lines omitted]")
 	assert.Contains(t, got, "-399") // most recent line retained
 	assert.LessOrEqual(t, len(got), maxTotalBytes+128)
+}
+
+func TestSanitizeLine(t *testing.T) {
+	tests := map[string]struct {
+		line  string
+		want  string // exact expected output, if set
+		check func(string) bool
+	}{
+		"legit line untouched": {
+			line: "INFO: heap free 176000 bytes",
+			want: "INFO: heap free 176000 bytes",
+		},
+		"ansi stripped": {
+			line: "\x1b[31mERROR\x1b[0m: something broke",
+			want: "ERROR: something broke",
+		},
+		"ansi osc stripped": {
+			line: "\x1b]0;window title\x07plain text",
+			want: "plain text",
+		},
+		"majority control line elided": {
+			line: "\x01\x02\x03\x04\x05\x06\x07\x08 ok",
+			check: func(got string) bool {
+				return strings.Contains(got, "bytes of framing noise elided")
+			},
+		},
+		"repeated run collapsed not elided": {
+			// A single repeated printable byte, well past maxRepeatRun;
+			// collapses to a short marker rather than being elided,
+			// since the marker text itself contains no control bytes.
+			line: strings.Repeat("a", 200),
+			check: func(got string) bool {
+				return strings.Contains(got, "[0x61×200]") && !strings.Contains(got, "elided")
+			},
+		},
+		"boundary just under threshold kept": {
+			// 3 control bytes in 10 runes = 30% < 35% threshold.
+			line: "\x01\x02\x03abcdefg",
+			check: func(got string) bool {
+				return !strings.Contains(got, "elided")
+			},
+		},
+		"boundary just over threshold elided": {
+			// 4 control bytes in 10 runes = 40% > 35% threshold.
+			line: "\x01\x02\x03\x04abcdef",
+			check: func(got string) bool {
+				return strings.Contains(got, "bytes of framing noise elided")
+			},
+		},
+		"tab newline cr excluded from ratio": {
+			line: "\tfield1\tfield2\r\n",
+			want: "\tfield1\tfield2\r\n",
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := sanitizeLine(tt.line)
+			if tt.check != nil {
+				assert.True(t, tt.check(got), "got: %q", got)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSanitizeLineElidedMarkerReportsOriginalLength(t *testing.T) {
+	line := "\x01\x02\x03\x04\x05\x06\x07\x08"
+	got := sanitizeLine(line)
+	assert.Equal(t, fmt.Sprintf("[%d bytes of framing noise elided]", len(line)), got)
+}
+
+func TestBoundOutputNonRawComposesWithMaxTotalBytes(t *testing.T) {
+	// Legit (non-repeated) lines that individually pass sanitizeLine
+	// untouched should still trip boundOutput's total-cap trimming.
+	line := "field-a=1 field-b=2 field-c=3 field-d=4 field-e=5"
+	var lines []string
+	for i := 0; i < 800; i++ {
+		lines = append(lines, fmt.Sprintf("%s-%d", line, i))
+	}
+
+	got := boundOutput(lines, false)
+	assert.Contains(t, got, "[output truncated:")
+	assert.Contains(t, got, "earlier lines omitted]")
+	assert.Contains(t, got, "-799") // most recent line retained
+	assert.LessOrEqual(t, len(got), maxTotalBytes+128)
+}
+
+func TestSanitizeLineComposesWithMaxLineBytes(t *testing.T) {
+	// An oversized-but-legit line should still be truncated by capLine
+	// after sanitizeLine's noise filtering passes it through untouched.
+	line := strings.Repeat("legit-word ", maxLineBytes)
+	got := sanitizeLine(line)
+	assert.Contains(t, got, "…[+")
+	assert.Contains(t, got, "bytes]")
+	assert.LessOrEqual(t, len(got), maxLineBytes+32)
+}
+
+func TestHandleSerialReadFiltersNoiseByDefault(t *testing.T) {
+	setupTestPorts(t)
+
+	testMgr := serial.NewManager()
+	testMgr.AddToBuffer("\x01\x02\x03\x04\x05\x06\x07\x08")
+	testMgr.AddToBuffer("INFO: normal line")
+	testMgr.SetTestState(true, "test-port", 115200, nil)
+	session.InsertPort("test-port", session.NewPortSession(testMgr, "test-port", testMgr.Baud(), session.ModeReader))
+
+	req := mcp.CallToolRequest{}
+	result, err := handleSerialRead(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "bytes of framing noise elided")
+	assert.Contains(t, tc.Text, "INFO: normal line")
+}
+
+func TestHandleSerialReadRawBypassesFiltering(t *testing.T) {
+	setupTestPorts(t)
+
+	noisy := "\x01\x02\x03\x04\x05\x06\x07\x08"
+	testMgr := serial.NewManager()
+	testMgr.AddToBuffer(noisy)
+	testMgr.SetTestState(true, "test-port", 115200, nil)
+	session.InsertPort("test-port", session.NewPortSession(testMgr, "test-port", testMgr.Baud(), session.ModeReader))
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"raw": true,
+	}
+	result, err := handleSerialRead(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.NotContains(t, tc.Text, "elided")
+	assert.Equal(t, noisy, tc.Text)
 }
 
 func TestHandleSerialReadCapsOversizedOutput(t *testing.T) {
@@ -390,7 +533,13 @@ func TestHandleSerialReadCapsOversizedOutput(t *testing.T) {
 	testMgr.SetTestState(true, "test-port", 115200, nil)
 	session.InsertPort("test-port", session.NewPortSession(testMgr, "test-port", testMgr.Baud(), session.ModeReader))
 
+	// raw:true exercises capLine's truncation directly; the default
+	// (non-raw) path collapses this repeated-byte line to a short marker
+	// well under maxLineBytes (see TestSanitizeLine), so it never truncates.
 	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"raw": true,
+	}
 	result, err := handleSerialRead(context.Background(), req)
 	require.NoError(t, err)
 	require.NotNil(t, result)
