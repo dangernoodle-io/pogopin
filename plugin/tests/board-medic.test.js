@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const agentPath = path.join(__dirname, '..', 'agents', 'board-medic.md');
-const skillPath = path.join(__dirname, '..', 'skills', 'board-medic', 'SKILL.md');
+const skillPath = path.join(__dirname, '..', 'skills', 'diagnose', 'SKILL.md');
 const espToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'esp_tools.go');
 const serialToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'serial_tools.go');
 const decodeToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'decode_tools.go');
@@ -63,10 +63,10 @@ test('board-medic agent does not grant destructive tools', () => {
   }
 });
 
-test('board-medic skill has valid frontmatter', () => {
+test('diagnose skill has valid frontmatter', () => {
   const md = fs.readFileSync(skillPath, 'utf8');
   const fm = parseFrontmatter(md);
   assert.ok(fm, 'frontmatter missing');
-  assert.equal(fm.name, 'board-medic');
+  assert.equal(fm.name, 'diagnose');
   assert.ok(fm.description && fm.description.length > 0, 'description empty');
 });
