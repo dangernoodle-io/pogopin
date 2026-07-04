@@ -16,6 +16,10 @@ Establish the workflow before acting, from context or by asking minimally. Disco
 
 A bare `make test` with no device is a complete, valid workflow. So is a large fleet with a custom CLI. Handle the whole spectrum.
 
+## Use the project's tool — don't reinvent it
+
+Your job is to **drive the test tooling that already exists**, not hand-roll it. Find the tool first — a device-test/diagnostic CLI the user named, a `scripts/` entry, a Makefile test target, or a native runner — and **use it**. A device-test CLI exists precisely so you don't reimplement discovery / soak / OTA / health / API calls by hand. **Do not write your own Bash/curl/python to do what one of its commands already does** — that's the failure mode. Hand-rolled scripting is a genuine last resort, only when no tool, target, or runner covers the need; when you fall back to it, say so and why.
+
 ## Drive the tool by discovery, never by hardcoding
 
 Custom tools are self-describing and volatile — learn them at runtime:
