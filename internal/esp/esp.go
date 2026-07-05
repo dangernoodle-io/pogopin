@@ -16,8 +16,8 @@ type FlasherFactory func(port string, opts *espflasher.FlasherOptions) (Flasher,
 // Flasher interface wraps espflasher methods for testability.
 type Flasher interface {
 	FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error
-	EraseFlash() error
-	EraseRegion(offset, size uint32) error
+	EraseFlash(progress espflasher.ProgressFunc) error
+	EraseRegion(offset, size uint32, progress espflasher.ProgressFunc) error
 	FlashID() (uint8, uint16, error)
 	ChipType() espflasher.ChipType
 	ChipName() string
@@ -28,7 +28,7 @@ type Flasher interface {
 	WriteRegister(address, value uint32) error
 	GetSecurityInfo() (*espflasher.SecurityInfo, error)
 	GetFlashMD5(offset, size uint32) (string, error)
-	ReadFlash(offset, size uint32) ([]byte, error)
+	ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error)
 	FlushInput()
 }
 
@@ -158,8 +158,9 @@ func normalizeFlashMode(s string) string {
 	}
 }
 
-// FlashESP flashes firmware images to an ESP chip.
-func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts FlashOptions) (FlashResult, error) {
+// FlashESP flashes firmware images to an ESP chip. progress, if non-nil, is
+// invoked with cumulative bytes-written / total-bytes as flashing proceeds.
+func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts FlashOptions, progress func(current, total int)) (FlashResult, error) {
 	if opts.BaudRate == 0 {
 		opts.BaudRate = 115200
 	}
@@ -196,7 +197,7 @@ func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts Flas
 			}
 		}
 		if ptData == nil {
-			ptData, ptErr = f.ReadFlash(partitionTableOffset, partitionTableSize)
+			ptData, ptErr = f.ReadFlash(partitionTableOffset, partitionTableSize, nil)
 		}
 		if ptErr == nil {
 			partitions := ParsePartitionTable(ptData)
@@ -224,7 +225,12 @@ func FlashESP(factory FlasherFactory, port string, images []ImageSpec, opts Flas
 		totalBytes += len(data)
 	}
 
-	err = f.FlashImages(imageParts, func(current, total int) {})
+	cb := progress
+	if cb == nil {
+		cb = func(int, int) {}
+	}
+
+	err = f.FlashImages(imageParts, cb)
 	if err != nil {
 		return FlashResult{}, err
 	}
@@ -246,8 +252,9 @@ func (la *loggerAdapter) Logf(format string, args ...interface{}) {
 	_, _ = fmt.Fprintf(la.w, format+"\n", args...)
 }
 
-// EraseESP erases flash memory on an ESP chip.
-func EraseESP(factory FlasherFactory, port string, opts EraseOptions) error {
+// EraseESP erases flash memory on an ESP chip. progress, if non-nil, is
+// forwarded to the fork's opt-in ETA callback during the erase operation.
+func EraseESP(factory FlasherFactory, port string, opts EraseOptions, progress espflasher.ProgressFunc) error {
 	if opts.BaudRate == 0 {
 		opts.BaudRate = 115200
 	}
@@ -266,9 +273,9 @@ func EraseESP(factory FlasherFactory, port string, opts EraseOptions) error {
 	}()
 
 	if opts.Offset == nil {
-		err = f.EraseFlash()
+		err = f.EraseFlash(progress)
 	} else if opts.Size != nil {
-		err = f.EraseRegion(*opts.Offset, *opts.Size)
+		err = f.EraseRegion(*opts.Offset, *opts.Size, progress)
 	} else {
 		return fmt.Errorf("EraseRegion requires both offset and size")
 	}
@@ -459,7 +466,7 @@ func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, bau
 		_ = f.Close()
 	}()
 
-	data, err := f.ReadFlash(offset, size)
+	data, err := f.ReadFlash(offset, size, nil)
 	if err != nil {
 		return ReadFlashResult{}, err
 	}
@@ -519,7 +526,7 @@ func WriteNVS(factory FlasherFactory, port string, entries []nvs.Entry, offset, 
 
 	_, err = FlashESP(factory, port, []ImageSpec{
 		{Path: tmpFile.Name(), Offset: offset},
-	}, FlashOptions{BaudRate: baudRate, ResetMode: resetMode})
+	}, FlashOptions{BaudRate: baudRate, ResetMode: resetMode}, nil)
 	return err
 }
 
@@ -555,7 +562,7 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 	}()
 
 	// Read current NVS
-	data, err := f.ReadFlash(offset, size)
+	data, err := f.ReadFlash(offset, size, nil)
 	if err != nil {
 		return fmt.Errorf("read NVS: %w", err)
 	}
@@ -629,7 +636,7 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 	}()
 
 	// Read current NVS
-	data, err := f.ReadFlash(offset, size)
+	data, err := f.ReadFlash(offset, size, nil)
 	if err != nil {
 		return fmt.Errorf("read NVS: %w", err)
 	}
