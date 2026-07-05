@@ -448,8 +448,9 @@ func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudR
 	}, nil
 }
 
-// ReadFlashData reads raw bytes from ESP flash.
-func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string) (ReadFlashResult, error) {
+// ReadFlashData reads raw bytes from ESP flash. progress, if non-nil, is
+// forwarded to the fork's byte-accurate read progress callback.
+func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string, progress espflasher.ProgressFunc) (ReadFlashResult, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -466,7 +467,7 @@ func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, bau
 		_ = f.Close()
 	}()
 
-	data, err := f.ReadFlash(offset, size, nil)
+	data, err := f.ReadFlash(offset, size, progress)
 	if err != nil {
 		return ReadFlashResult{}, err
 	}
@@ -480,7 +481,7 @@ func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, bau
 
 // ReadNVS reads and parses NVS entries from an ESP device.
 func ReadNVS(factory FlasherFactory, port string, offset, size uint32, baudRate int, namespace string, resetMode string) ([]nvs.Entry, error) {
-	result, err := ReadFlashData(factory, port, offset, size, baudRate, resetMode)
+	result, err := ReadFlashData(factory, port, offset, size, baudRate, resetMode, nil)
 	if err != nil {
 		return nil, fmt.Errorf("read flash: %w", err)
 	}

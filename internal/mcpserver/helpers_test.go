@@ -94,12 +94,14 @@ type mockFlasher struct {
 	readFlashErr        error
 	readFlashVal        []byte
 
-	// flashImagesProgress and eraseFlashProgress, when set, are invoked with
-	// the real progress.ProgressFunc handed down by esp.FlashESP/EraseESP so
-	// tests can drive a controlled progress sequence through the actual
-	// callback chain (used by progress_notify_test.go).
+	// flashImagesProgress, eraseFlashProgress, and readFlashProgress, when
+	// set, are invoked with the real progress.ProgressFunc handed down by
+	// esp.FlashESP/EraseESP/ReadFlashData so tests can drive a controlled
+	// progress sequence through the actual callback chain (used by
+	// progress_notify_test.go).
 	flashImagesProgress func(progress espflasher.ProgressFunc)
 	eraseFlashProgress  func(progress espflasher.ProgressFunc)
+	readFlashProgress   func(progress espflasher.ProgressFunc)
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -169,6 +171,9 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 }
 
 func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
+	if m.readFlashProgress != nil {
+		m.readFlashProgress(progress)
+	}
 	return m.readFlashVal, m.readFlashErr
 }
 
