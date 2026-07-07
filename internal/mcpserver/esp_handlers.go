@@ -10,6 +10,7 @@ import (
 	"dangernoodle.io/pogopin/internal/esp"
 	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
+	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 	"tinygo.org/x/espflasher/pkg/nvs"
 )
 
@@ -80,7 +81,10 @@ func handleFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 
 	// Flash
-	result, err := esp.FlashESP(factory, port, images, opts)
+	emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	result, err := esp.FlashESP(factory, port, images, opts, func(current, total int) {
+		emit(current, total, "flashing")
+	})
 	if err != nil {
 		session.ReleaseFlasherImmediate(sess, port)
 		if syncResult := handleSyncError(err); syncResult != nil {
@@ -146,7 +150,10 @@ func handleErase(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	}
 
 	// Erase
-	err = esp.EraseESP(factory, port, opts)
+	emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	err = esp.EraseESP(factory, port, opts, espflasher.ProgressFunc(func(current, total int) {
+		emit(current, total, "erasing")
+	}))
 	if err != nil {
 		session.ReleaseFlasherImmediate(sess, port)
 		if syncResult := handleSyncError(err); syncResult != nil {

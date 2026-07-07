@@ -95,12 +95,12 @@ func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espfla
 	return m.flashImagesErr
 }
 
-func (m *mockFlasher) EraseFlash() error {
+func (m *mockFlasher) EraseFlash(progress espflasher.ProgressFunc) error {
 	m.eraseFlashCalled = true
 	return m.eraseFlashErr
 }
 
-func (m *mockFlasher) EraseRegion(offset, size uint32) error {
+func (m *mockFlasher) EraseRegion(offset, size uint32, progress espflasher.ProgressFunc) error {
 	m.eraseRegionCalled = true
 	m.eraseRegionOffset = offset
 	m.eraseRegionSize = size
@@ -151,7 +151,7 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 	return m.flashMD5Val, m.flashMD5Err
 }
 
-func (m *mockFlasher) ReadFlash(offset, size uint32) ([]byte, error) {
+func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
 	return m.readFlashVal, m.readFlashErr
 }
 

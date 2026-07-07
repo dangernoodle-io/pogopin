@@ -31,6 +31,8 @@ type mockFlasher struct {
 	eraseRegionCalled   bool
 	eraseRegionOffset   uint32
 	eraseRegionSize     uint32
+	eraseFlashProgress  espflasher.ProgressFunc
+	eraseRegionProgress espflasher.ProgressFunc
 	readRegisterErr     error
 	readRegisterVal     uint32
 	writeRegisterErr    error
@@ -51,15 +53,17 @@ func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espfla
 	return m.flashImagesErr
 }
 
-func (m *mockFlasher) EraseFlash() error {
+func (m *mockFlasher) EraseFlash(progress espflasher.ProgressFunc) error {
 	m.eraseFlashCalled = true
+	m.eraseFlashProgress = progress
 	return m.eraseFlashErr
 }
 
-func (m *mockFlasher) EraseRegion(offset, size uint32) error {
+func (m *mockFlasher) EraseRegion(offset, size uint32, progress espflasher.ProgressFunc) error {
 	m.eraseRegionCalled = true
 	m.eraseRegionOffset = offset
 	m.eraseRegionSize = size
+	m.eraseRegionProgress = progress
 	return m.eraseRegionErr
 }
 
@@ -106,7 +110,7 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 	return m.flashMD5Val, m.flashMD5Err
 }
 
-func (m *mockFlasher) ReadFlash(offset, size uint32) ([]byte, error) {
+func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
 	return m.readFlashVal, m.readFlashErr
 }
 
@@ -133,7 +137,7 @@ func TestFlashESPSuccess(t *testing.T) {
 	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: fw1, Offset: 0x1000},
 		{Path: fw2, Offset: 0x5000},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 9+9, result.BytesWritten)
@@ -150,7 +154,7 @@ func TestFlashESPMissingFile(t *testing.T) {
 
 	_, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: "/nonexistent/file.bin", Offset: 0x1000},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read image")
@@ -161,7 +165,7 @@ func TestFlashESPFactoryError(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	_, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{}, FlashOptions{})
+	_, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{}, FlashOptions{}, nil)
 	require.Error(t, err)
 }
 
@@ -180,7 +184,7 @@ func TestFlashESPFlashError(t *testing.T) {
 
 	_, err = FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: fw, Offset: 0},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.Error(t, err)
 }
@@ -200,7 +204,7 @@ func TestFlashESPBaudRateDefaults(t *testing.T) {
 
 	_, err = FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: fw, Offset: 0},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 115200, capturedOpts.BaudRate)
@@ -225,7 +229,7 @@ func TestFlashESPCustomBaudRate(t *testing.T) {
 	}, FlashOptions{
 		BaudRate:      9600,
 		FlashBaudRate: 230400,
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	assert.Equal(t, 9600, capturedOpts.BaudRate)
@@ -238,7 +242,7 @@ func TestEraseESPWholeChip(t *testing.T) {
 		return mock, nil
 	}
 
-	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{})
+	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{}, nil)
 	require.NoError(t, err)
 	assert.True(t, mock.eraseFlashCalled)
 	assert.False(t, mock.eraseRegionCalled)
@@ -257,7 +261,7 @@ func TestEraseESPRegion(t *testing.T) {
 	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{
 		Offset: &offset,
 		Size:   &size,
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	assert.False(t, mock.eraseFlashCalled)
@@ -277,7 +281,7 @@ func TestEraseESPRegionMissingSize(t *testing.T) {
 
 	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{
 		Offset: &offset,
-	})
+	}, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "offset and size")
@@ -288,7 +292,7 @@ func TestEraseESPFactoryError(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{})
+	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{}, nil)
 	require.Error(t, err)
 }
 
@@ -300,8 +304,24 @@ func TestEraseESPEraseError(t *testing.T) {
 		return mock, nil
 	}
 
-	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{})
+	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{}, nil)
 	require.Error(t, err)
+}
+
+func TestEraseESPForwardsProgress(t *testing.T) {
+	mock := &mockFlasher{}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var called bool
+	progress := func(current, total int) { called = true }
+
+	err := EraseESP(factory, "/dev/ttyUSB0", EraseOptions{}, progress)
+	require.NoError(t, err)
+	require.NotNil(t, mock.eraseFlashProgress)
+	mock.eraseFlashProgress(1, 2)
+	assert.True(t, called)
 }
 
 func TestGetChipInfoSuccess(t *testing.T) {
@@ -430,7 +450,7 @@ func TestFlashESPLogCapture(t *testing.T) {
 
 	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: fw, Offset: 0},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.NoError(t, err)
 	assert.Contains(t, result.Log, "test log")
@@ -442,7 +462,7 @@ func TestFlashESPEmptyImages(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{}, FlashOptions{})
+	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{}, FlashOptions{}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, result.BytesWritten)
 	assert.True(t, mock.flashImagesCalled)
@@ -1044,7 +1064,7 @@ func TestFlashESPForceOffsetsSkipsValidation(t *testing.T) {
 	// flash at 0x0 would normally fail validation because it doesn't match any partition
 	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: fw, Offset: 0x0},
-	}, FlashOptions{ForceOffsets: true})
+	}, FlashOptions{ForceOffsets: true}, nil)
 
 	require.NoError(t, err)
 	assert.True(t, mock.flashImagesCalled)
@@ -1098,7 +1118,7 @@ func TestFlashESPPrefersInFlightPartitionTable(t *testing.T) {
 	result, err := FlashESP(factory, "/dev/ttyUSB0", []ImageSpec{
 		{Path: tmpDir + "/new_partitions.bin", Offset: 0x8000},
 		{Path: fw, Offset: 0x10000},
-	}, FlashOptions{})
+	}, FlashOptions{}, nil)
 
 	require.NoError(t, err)
 	assert.True(t, mock.flashImagesCalled)

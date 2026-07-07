@@ -93,19 +93,32 @@ type mockFlasher struct {
 	flashMD5Val         string
 	readFlashErr        error
 	readFlashVal        []byte
+
+	// flashImagesProgress and eraseFlashProgress, when set, are invoked with
+	// the real progress.ProgressFunc handed down by esp.FlashESP/EraseESP so
+	// tests can drive a controlled progress sequence through the actual
+	// callback chain (used by progress_notify_test.go).
+	flashImagesProgress func(progress espflasher.ProgressFunc)
+	eraseFlashProgress  func(progress espflasher.ProgressFunc)
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
 	m.flashImagesCalled = true
+	if m.flashImagesProgress != nil {
+		m.flashImagesProgress(progress)
+	}
 	return m.flashImagesErr
 }
 
-func (m *mockFlasher) EraseFlash() error {
+func (m *mockFlasher) EraseFlash(progress espflasher.ProgressFunc) error {
 	m.eraseFlashCalled = true
+	if m.eraseFlashProgress != nil {
+		m.eraseFlashProgress(progress)
+	}
 	return m.eraseFlashErr
 }
 
-func (m *mockFlasher) EraseRegion(offset, size uint32) error {
+func (m *mockFlasher) EraseRegion(offset, size uint32, progress espflasher.ProgressFunc) error {
 	m.eraseRegionCalled = true
 	m.eraseRegionOffset = offset
 	m.eraseRegionSize = size
@@ -155,7 +168,7 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 	return m.flashMD5Val, m.flashMD5Err
 }
 
-func (m *mockFlasher) ReadFlash(offset, size uint32) ([]byte, error) {
+func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
 	return m.readFlashVal, m.readFlashErr
 }
 
@@ -171,11 +184,11 @@ func (m *mockESPFlasher) FlashImages(images []espflasher.ImagePart, progress esp
 	return nil
 }
 
-func (m *mockESPFlasher) EraseFlash() error {
+func (m *mockESPFlasher) EraseFlash(progress espflasher.ProgressFunc) error {
 	return nil
 }
 
-func (m *mockESPFlasher) EraseRegion(offset, size uint32) error {
+func (m *mockESPFlasher) EraseRegion(offset, size uint32, progress espflasher.ProgressFunc) error {
 	return nil
 }
 
@@ -219,7 +232,7 @@ func (m *mockESPFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 	return "", nil
 }
 
-func (m *mockESPFlasher) ReadFlash(offset, size uint32) ([]byte, error) {
+func (m *mockESPFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
 	return nil, nil
 }
 
