@@ -14,7 +14,7 @@ Embedded development MCP server. Serial port monitoring, ESP-IDF chip programmin
 
 | Namespace | Tools | Docs |
 |-----------|-------|------|
-| Serial | `serial_list`, `serial_start`, `serial_read`, `serial_write`, `serial_stop`, `serial_status`, `flash_external` | [Wiki](../../wiki/Serial-Tools) |
+| Serial | `serial_list`, `serial_start`, `serial_read`, `serial_write`, `serial_stop`, `serial_restart`, `serial_status`, `flash_external` | [Wiki](../../wiki/Serial-Tools) |
 | ESP | `esp_flash`, `esp_erase`, `esp_info`, `esp_register`, `esp_reset`, `esp_read_flash`, `esp_read_nvs`, `esp_write_nvs`, `esp_nvs_set`, `esp_nvs_delete` | [Wiki](../../wiki/ESP-Tools) |
 | Decode | `decode_backtrace` | [Wiki](../../wiki/Decode) |
 
@@ -66,7 +66,7 @@ Download pre-built binaries from [releases](https://github.com/dangernoodle-io/p
 claude mcp add --scope user pogopin /absolute/path/to/pogo server
 ```
 
-This gives you the 18 MCP tools but none of the auto-context injection that the plugin provides.
+This gives you the 19 MCP tools but none of the auto-context injection that the plugin provides.
 
 ## CLI
 

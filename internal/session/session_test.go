@@ -266,6 +266,152 @@ func TestStopSessionNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "no serial port open")
 }
 
+// RestartSession tests
+
+func TestRestartSessionOpenPortPreservesBaudAndTearsDown(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, "/dev/test", 57600, nil)
+
+	fl := &mockFlasher{}
+	timerFired := false
+	timer := time.AfterFunc(time.Hour, func() { timerFired = true })
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:     mgr,
+		port:    "/dev/test",
+		baud:    57600,
+		mode:    ModePending,
+		flasher: fl,
+		timer:   timer,
+	}
+	portsMu.Unlock()
+
+	var createdBufSize int
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		createdBufSize = bufSize
+		m := serial.NewManager()
+		m.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	}
+
+	baud, err := RestartSession("/dev/test", nil, 500)
+	require.NoError(t, err)
+	assert.Equal(t, 57600, baud)
+	assert.Equal(t, 500, createdBufSize)
+
+	// teardownSessionLocked must have fired the old flasher's Reset/Close and
+	// canceled the old timer.
+	assert.True(t, fl.resetCalled)
+	assert.True(t, fl.closeCalled)
+	assert.False(t, timerFired)
+
+	portsMu.Lock()
+	sess, exists := ports["/dev/test"]
+	portsMu.Unlock()
+	require.True(t, exists)
+	assert.Equal(t, 57600, sess.baud)
+	assert.Equal(t, ModeReader, sess.mode)
+	assert.NotSame(t, mgr, sess.mgr)
+	assert.True(t, sess.mgr.IsRunning())
+	_ = sess.mgr.Stop()
+}
+
+func TestRestartSessionClosedPortDefaultsBaud(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		m := serial.NewManager()
+		m.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	}
+
+	baud, err := RestartSession("/dev/unknown", nil, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, 115200, baud)
+
+	portsMu.Lock()
+	sess, exists := ports["/dev/unknown"]
+	portsMu.Unlock()
+	require.True(t, exists)
+	assert.Equal(t, 115200, sess.baud)
+	assert.Equal(t, ModeReader, sess.mode)
+	_ = sess.mgr.Stop()
+}
+
+func TestRestartSessionBaudOverrideWins(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, "/dev/test", 9600, nil)
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:  mgr,
+		port: "/dev/test",
+		baud: 9600,
+		mode: ModeReader,
+	}
+	portsMu.Unlock()
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		m := serial.NewManager()
+		m.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	}
+
+	override := 230400
+	baud, err := RestartSession("/dev/test", &override, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, 230400, baud)
+
+	portsMu.Lock()
+	sess, exists := ports["/dev/test"]
+	portsMu.Unlock()
+	require.True(t, exists)
+	assert.Equal(t, 230400, sess.baud)
+	_ = sess.mgr.Stop()
+}
+
+func TestRestartSessionStartError(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		m := serial.NewManager()
+		m.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return nil, fmt.Errorf("open failed")
+		}
+		return m
+	}
+
+	baud, err := RestartSession("/dev/broken", nil, 1000)
+	assert.Error(t, err)
+	assert.Equal(t, 115200, baud)
+
+	portsMu.Lock()
+	_, exists := ports["/dev/broken"]
+	portsMu.Unlock()
+	assert.True(t, exists, "session should still be tracked even though Start failed")
+}
+
 // ResolveSession tests
 
 func TestResolveSessionSinglePort(t *testing.T) {

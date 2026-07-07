@@ -989,3 +989,160 @@ func TestHandleSerialStopNoPort(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.IsError)
 }
+
+// TestHandleSerialRestartOpenPortPreservesBaud verifies restart on an
+// already-open port stops the existing session (freeing it for a fresh
+// StartSession) and starts a new one preserving the prior baud.
+func TestHandleSerialRestartOpenPortPreservesBaud(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	session.SetNewManagerFunc(func(bufSize int) *serial.Manager {
+		m := serial.NewManagerWithBufferSize(bufSize)
+		m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	})
+
+	m := serial.NewManagerWithBufferSize(1000)
+	m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	session.InsertPort("test-port", session.NewPortSession(m, "test-port", 57600, session.ModeReader))
+	require.NoError(t, m.Start("test-port", 57600))
+	require.True(t, m.IsRunning())
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "test-port",
+	}
+	result, err := handleSerialRestart(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "Restarted reading from test-port at 57600 baud")
+	assert.Equal(t, 1, session.PortCount())
+
+	newMgr, resolvedPort, err := session.ResolveSession(map[string]interface{}{"port": "test-port"})
+	require.NoError(t, err)
+	assert.Equal(t, "test-port", resolvedPort)
+	assert.True(t, newMgr.IsRunning())
+	assert.Equal(t, 57600, newMgr.Baud())
+	_ = newMgr.Stop()
+}
+
+// TestHandleSerialRestartClosedPortBehavesLikeStart verifies restart on a
+// port with no open session behaves like a plain serial_start (falls back
+// to the 115200 default baud, no stop attempted).
+func TestHandleSerialRestartClosedPortBehavesLikeStart(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	session.SetNewManagerFunc(func(bufSize int) *serial.Manager {
+		m := serial.NewManagerWithBufferSize(bufSize)
+		m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	})
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "test-port",
+	}
+	result, err := handleSerialRestart(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "Restarted reading from test-port at 115200 baud")
+	assert.Equal(t, 1, session.PortCount())
+
+	m, _, err := session.ResolveSession(map[string]interface{}{"port": "test-port"})
+	require.NoError(t, err)
+	_ = m.Stop()
+}
+
+// TestHandleSerialRestartArgsOverridePreservedBaud verifies an explicit baud
+// in the restart request wins over the previously-open port's baud.
+func TestHandleSerialRestartArgsOverridePreservedBaud(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	session.SetNewManagerFunc(func(bufSize int) *serial.Manager {
+		m := serial.NewManagerWithBufferSize(bufSize)
+		m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return m
+	})
+
+	m := serial.NewManagerWithBufferSize(1000)
+	m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	session.InsertPort("test-port", session.NewPortSession(m, "test-port", 9600, session.ModeReader))
+	require.NoError(t, m.Start("test-port", 9600))
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "test-port",
+		"baud": float64(230400),
+	}
+	result, err := handleSerialRestart(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "Restarted reading from test-port at 230400 baud")
+
+	newMgr, _, err := session.ResolveSession(map[string]interface{}{"port": "test-port"})
+	require.NoError(t, err)
+	assert.Equal(t, 230400, newMgr.Baud())
+	_ = newMgr.Stop()
+}
+
+func TestHandleSerialRestartMissingPort(t *testing.T) {
+	setupTestPorts(t)
+	req := mcp.CallToolRequest{}
+	result, err := handleSerialRestart(context.Background(), req)
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+}
+
+// TestHandleSerialRestartOpenError verifies session.RestartSession's error
+// (e.g. Start failing on the fresh manager) propagates as a tool error.
+func TestHandleSerialRestartOpenError(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	session.SetNewManagerFunc(func(bufSize int) *serial.Manager {
+		m := serial.NewManagerWithBufferSize(bufSize)
+		m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return nil, fmt.Errorf("device busy")
+		}
+		return m
+	})
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":        "test-port",
+		"buffer_size": float64(2000),
+	}
+	result, err := handleSerialRestart(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "device busy")
+}

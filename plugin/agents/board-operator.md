@@ -1,7 +1,7 @@
 ---
 name: board-operator
 description: "Executes efficient, surgical hardware operations. Flashes the minimum — app partition only — verifies by hash, resets chip-aware, and handles a multi-board bench safely. The executor counterpart to board-medic (which only diagnoses). Runs routine ops autonomously; confirms before the destructive subset (whole-chip erase, bootloader/partition-table flash, esp_write_nvs, factory flash).\n\n<example>user: \"reflash the app\" → spawn board-operator</example>\n<example>user: \"flash this firmware to the S3 without wiping NVS\" → spawn board-operator</example>\n<example>user: \"update the app partition and confirm it boots\" → spawn board-operator</example>"
-tools: ["Read", "Grep", "Glob", "Bash", "mcp__plugin_pogopin-mcp_pogopin__serial_list", "mcp__plugin_pogopin-mcp_pogopin__serial_start", "mcp__plugin_pogopin-mcp_pogopin__serial_read", "mcp__plugin_pogopin-mcp_pogopin__serial_write", "mcp__plugin_pogopin-mcp_pogopin__serial_stop", "mcp__plugin_pogopin-mcp_pogopin__serial_status", "mcp__plugin_pogopin-mcp_pogopin__esp_flash", "mcp__plugin_pogopin-mcp_pogopin__esp_erase", "mcp__plugin_pogopin-mcp_pogopin__esp_info", "mcp__plugin_pogopin-mcp_pogopin__esp_register", "mcp__plugin_pogopin-mcp_pogopin__esp_reset", "mcp__plugin_pogopin-mcp_pogopin__esp_read_flash", "mcp__plugin_pogopin-mcp_pogopin__esp_read_nvs", "mcp__plugin_pogopin-mcp_pogopin__esp_write_nvs", "mcp__plugin_pogopin-mcp_pogopin__esp_nvs_set", "mcp__plugin_pogopin-mcp_pogopin__esp_nvs_delete", "mcp__plugin_pogopin-mcp_pogopin__flash_external", "mcp__plugin_pogopin-mcp_pogopin__decode_backtrace"]
+tools: ["Read", "Grep", "Glob", "Bash", "mcp__plugin_pogopin-mcp_pogopin__serial_list", "mcp__plugin_pogopin-mcp_pogopin__serial_start", "mcp__plugin_pogopin-mcp_pogopin__serial_read", "mcp__plugin_pogopin-mcp_pogopin__serial_write", "mcp__plugin_pogopin-mcp_pogopin__serial_stop", "mcp__plugin_pogopin-mcp_pogopin__serial_restart", "mcp__plugin_pogopin-mcp_pogopin__serial_status", "mcp__plugin_pogopin-mcp_pogopin__esp_flash", "mcp__plugin_pogopin-mcp_pogopin__esp_erase", "mcp__plugin_pogopin-mcp_pogopin__esp_info", "mcp__plugin_pogopin-mcp_pogopin__esp_register", "mcp__plugin_pogopin-mcp_pogopin__esp_reset", "mcp__plugin_pogopin-mcp_pogopin__esp_read_flash", "mcp__plugin_pogopin-mcp_pogopin__esp_read_nvs", "mcp__plugin_pogopin-mcp_pogopin__esp_write_nvs", "mcp__plugin_pogopin-mcp_pogopin__esp_nvs_set", "mcp__plugin_pogopin-mcp_pogopin__esp_nvs_delete", "mcp__plugin_pogopin-mcp_pogopin__flash_external", "mcp__plugin_pogopin-mcp_pogopin__decode_backtrace"]
 model: sonnet
 ---
 
@@ -68,6 +68,7 @@ Watch the board before and after operations — most "did it work?" questions ar
 - `serial_write`: `raw:false` appends `\n` for console line-commands; `raw:true` sends exact bytes for binary protocols.
 - `serial_status`: running / reconnecting / last_error — check it when reads come back empty.
 - `serial_stop` before any device-level op on the same port. `esp_*` tools auto-stop and restart the monitor around themselves; a monitor you started yourself must be stopped or it holds the port.
+- To re-trigger a DTR/RTS reset on a port already being monitored, use `serial_restart` — one atomic stop+start that preserves settings, instead of a manual `serial_stop`+`serial_start` pair.
 
 ## Multi-board bench — identify safely
 

@@ -36,6 +36,15 @@ func registerSerialTools(s *server.MCPServer) {
 	)
 	s.AddTool(stopTool, withRecover(handleSerialStop))
 
+	restartTool := mcp.NewTool("serial_restart",
+		mcp.WithDescription("Stop then restart buffered serial monitoring on a port (atomic stop+start); use to re-trigger a DTR/RTS reset without separate stop/start calls. If the port is open, its current baud is preserved as the default; request args override."),
+		mcp.WithString("port", mcp.Required(), mcp.Description("Serial port name (e.g., /dev/ttyUSB0 or COM3)")),
+		mcp.WithNumber("baud", mcp.Description("Baud rate (default: current baud if open, else 115200)")),
+		mcp.WithNumber("buffer_size", mcp.Description("Ring buffer size in lines (default 1000)")),
+		mcp.WithBoolean("auto_reset", mcp.Description("Auto-reset USB CDC devices after restart for immediate output (default true)")),
+	)
+	s.AddTool(restartTool, withRecover(handleSerialRestart))
+
 	writeTool := mcp.NewTool("serial_write",
 		mcp.WithDescription("Write data to a monitored serial port. Appends \\n by default; set raw=true to send exact bytes. Port must be started with serial_start."),
 		mcp.WithString("port", mcp.Description("Port name (optional if only one port open)")),

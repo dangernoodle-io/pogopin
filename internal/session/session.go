@@ -689,20 +689,10 @@ func StartSession(port string, baud int, bufSize int) error {
 	return sess.mgr.Start(port, baud)
 }
 
-// StopSession closes a port and removes it from management. Takes lock internally.
-func StopSession(port string) error {
-	portsMu.Lock()
-	defer func() {
-		snap := snapshotPorts()
-		portsMu.Unlock()
-		status.Write(snap)
-	}()
-
-	sess, exists := ports[port]
-	if !exists {
-		return fmt.Errorf("no serial port open for %s", port)
-	}
-
+// teardownSessionLocked cancels sess's pending timer, closes any cached
+// flasher, stops its manager, and removes it from the ports map. Caller must
+// hold portsMu. Shared by StopSession and RestartSession.
+func teardownSessionLocked(sess *PortSession, port string) {
 	// Cancel pending timer if any
 	if sess.timer != nil {
 		sess.timer.Stop()
@@ -720,7 +710,63 @@ func StopSession(port string) error {
 	_ = sess.mgr.Stop()
 
 	delete(ports, port)
+}
+
+// StopSession closes a port and removes it from management. Takes lock internally.
+func StopSession(port string) error {
+	portsMu.Lock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
+
+	sess, exists := ports[port]
+	if !exists {
+		return fmt.Errorf("no serial port open for %s", port)
+	}
+
+	teardownSessionLocked(sess, port)
 	return nil
+}
+
+// RestartSession atomically stops (if open) and starts a fresh manager for
+// port under a single portsMu acquisition, so a concurrent serial_start/
+// serial_stop/serial_restart call on the same port can never interleave in
+// an unlocked gap (BR-21 HIGH: the old handleSerialRestart called
+// StopSession then StartSession as two separately-locked steps). baud
+// defaults to the port's current baud if open, else 115200; baudOverride,
+// when non-nil, wins. Always creates a fresh manager + ring buffer (never
+// reuses the existing manager, unlike StartSession's same-manager restart
+// branch for an already-open port) so a stuck/dead manager can't survive a
+// restart. A missing/unknown port behaves like a plain start with no
+// partial state left behind. Returns the baud actually used.
+func RestartSession(port string, baudOverride *int, bufSize int) (int, error) {
+	portsMu.Lock()
+	defer func() {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+	}()
+
+	baud := 115200
+	if sess, exists := ports[port]; exists {
+		baud = sess.baud
+		teardownSessionLocked(sess, port)
+	}
+	if baudOverride != nil {
+		baud = *baudOverride
+	}
+
+	sess := &PortSession{
+		mgr:  newManagerFunc(bufSize),
+		port: port,
+		baud: baud,
+		mode: ModeReader,
+	}
+	ports[port] = sess
+
+	return baud, sess.mgr.Start(port, baud)
 }
 
 // CleanupAllSessions stops all managed ports. Used by signal handler.

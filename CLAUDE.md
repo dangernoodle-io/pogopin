@@ -36,6 +36,7 @@ make install  # go install .
 | serial_read | serial | Read buffered serial output |
 | serial_write | serial | Write data to port |
 | serial_stop | serial | Close port |
+| serial_restart | serial | Atomic stop+start on a port (re-trigger DTR/RTS reset) |
 | serial_status | serial | Port status (JSON) |
 | flash_external | flash | Stop port → run external flash command → restart → capture |
 | esp_flash | ESP | Flash firmware (native Go flasher) |
@@ -52,7 +53,7 @@ make install  # go install .
 
 The plugin also ships a **`board-medic`** subagent (read-mostly hardware diagnostician) with a matching `/diagnose` skill. Platform-agnostic posture with an ESP32-family section today; extend with new platform sections as their tooling lands. See `plugin/agents/board-medic.md`. Three firmware build-lifecycle agents live alongside it: **`firmware-architect`** (read-only design brief — API, memory, concurrency, test seam); **`firmware-reviewer`** (read-only audit against a defect-class checklist, findings ranked by severity); **`firmware-implementer`** (implements from a spec, builds, runs host tests, flashes, and verifies on hardware). Three more round out the roster: **`board-operator`** (executes surgical hardware ops — flashes the minimum, app-partition only, OTA-preferred, chip-aware reset, confirm-gate on destructive ops; reaches the board over serial or its exposed remote interface; the executor counterpart to board-medic); **`firmware-builder`** (builds with whatever build system the project uses — Makefile/idf.py/pio/Arduino/CMake — reports artifacts/sizes/warnings, knows incremental-build staleness gotchas; no hardware, no source edits); **`board-conductor`** (drives a user's test workflow against one/many/no devices, tool-, spec-, and interface-agnostic; interprets verdicts, triages failures, remediates OTA-first, escalating to board-operator for serial flash). One more rounds out the roster: **`firmware-explorer`** (read-only comprehension agent — maps boot/init flow, task and concurrency model, partition/NVS/memory layout, config surface, and peripheral usage on an existing firmware codebase; complements firmware-architect/firmware-reviewer/firmware-implementer without designing, auditing, or editing). Agent definitions are validated by `agents_test.go` (frontmatter, model/tools checks, and a generic-leak guard; runs in CI via `go test ./...`); a manual reviewer fixture with planted defects lives in `test/agent-fixtures/defect-zoo/`.
 
-Tools register in two tiers. The **core tier** (6× `serial_*` + `decode_backtrace`) registers at startup. The **hardware tier** (10× `esp_*` + `flash_external`) registers lazily on the first `serial_list` or `serial_start` call via `notifications/tools/list_changed`. Sessions that only decode crash logs never pay for the ESP tool surface.
+Tools register in two tiers. The **core tier** (7× `serial_*` + `decode_backtrace`) registers at startup. The **hardware tier** (10× `esp_*` + `flash_external`) registers lazily on the first `serial_list` or `serial_start` call via `notifications/tools/list_changed`. Sessions that only decode crash logs never pay for the ESP tool surface.
 
 ## Dependencies
 
