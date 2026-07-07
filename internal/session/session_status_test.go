@@ -62,6 +62,71 @@ func TestStartSession_WritesStatus(t *testing.T) {
 	assert.True(t, sf.Ports[0].Running)
 }
 
+// TestStartSession_WritesStatus_SessionIDAndPID verifies that PortState
+// entries carry CLAUDE_CODE_SESSION_ID and the process PID when the env var
+// is set (BR-31).
+func TestStartSession_WritesStatus_SessionIDAndPID(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-xyz789")
+
+	setupTestPorts(t)
+	statusPath := setupStatusFile(t)
+
+	origNewMgr := newManagerFunc
+	defer func() { newManagerFunc = origNewMgr }()
+
+	mgr := serial.NewManagerWithBufferSize(1000)
+	mgr.SetTestState(true, "/dev/ttyUSB0", 115200, nil)
+	mgr.OpenFunc = func(string, *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		return mgr
+	}
+
+	err := StartSession("/dev/ttyUSB0", 115200, 1000)
+	require.NoError(t, err)
+
+	sf := readStatusFile(t, statusPath)
+	require.Len(t, sf.Ports, 1)
+	assert.Equal(t, "sess-xyz789", sf.Ports[0].SessionID)
+	assert.Equal(t, os.Getpid(), sf.Ports[0].PID)
+}
+
+// TestStartSession_WritesStatus_SessionIDOmittedWhenUnset verifies that
+// PortState.SessionID stays empty when CLAUDE_CODE_SESSION_ID is unset,
+// preserving the graceful degrade the PreToolUse hook relies on.
+func TestStartSession_WritesStatus_SessionIDOmittedWhenUnset(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+
+	setupTestPorts(t)
+	statusPath := setupStatusFile(t)
+
+	origNewMgr := newManagerFunc
+	defer func() { newManagerFunc = origNewMgr }()
+
+	mgr := serial.NewManagerWithBufferSize(1000)
+	mgr.SetTestState(true, "/dev/ttyUSB0", 115200, nil)
+	mgr.OpenFunc = func(string, *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		return mgr
+	}
+
+	err := StartSession("/dev/ttyUSB0", 115200, 1000)
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(statusPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "session_id")
+
+	sf := readStatusFile(t, statusPath)
+	require.Len(t, sf.Ports, 1)
+	assert.Equal(t, "", sf.Ports[0].SessionID)
+}
+
 // TestStopSession_WritesStatus verifies that StopSession writes status on exit.
 func TestStopSession_WritesStatus(t *testing.T) {
 	setupTestPorts(t)
