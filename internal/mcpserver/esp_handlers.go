@@ -20,7 +20,8 @@ func handleFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 
 	bootWait := 2.0
 	if bw, ok := req.GetArguments()["boot_wait"].(float64); ok {
@@ -80,10 +81,12 @@ func handleFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		opts.ForceOffsets = forceOffsets
 	}
 
-	// Flash
-	emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	// Flash. Uses a separate emitter instance from connectEmit above — see
+	// connectStatusEmitter's doc comment for why sharing one would drop
+	// byte-progress ticks after connect's attempt-scale ticks.
+	opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
 	result, err := esp.FlashESP(factory, port, images, opts, func(current, total int) {
-		emit(current, total, "flashing")
+		opEmit(current, total, "flashing")
 	})
 	if err != nil {
 		session.ReleaseFlasherImmediate(sess, port)
@@ -119,7 +122,8 @@ func handleErase(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 
 	bootWait := 2.0
 	if bw, ok := req.GetArguments()["boot_wait"].(float64); ok {
@@ -149,10 +153,11 @@ func handleErase(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		}
 	}
 
-	// Erase
-	emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	// Erase. Separate emitter instance from connectEmit above — see
+	// connectStatusEmitter's doc comment.
+	opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
 	err = esp.EraseESP(factory, port, opts, espflasher.ProgressFunc(func(current, total int) {
-		emit(current, total, "erasing")
+		opEmit(current, total, "erasing")
 	}))
 	if err != nil {
 		session.ReleaseFlasherImmediate(sess, port)
@@ -188,7 +193,8 @@ func handleESPInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	// Parse baud rate
@@ -259,7 +265,8 @@ func handleRegister(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	// Parse address
@@ -330,7 +337,8 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 
 	bootWait := 2.0
 	if bw, ok := req.GetArguments()["boot_wait"].(float64); ok {
@@ -375,7 +383,8 @@ func handleESPReadFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	// Parse offset
@@ -423,10 +432,11 @@ func handleESPReadFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 
 		return mcp.NewToolResultText(string(data)), nil
 	} else {
-		// Read mode
-		emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+		// Read mode. Separate emitter instance from connectEmit above — see
+		// connectStatusEmitter's doc comment.
+		opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
 		flashResult, err := esp.ReadFlashData(factory, port, offset, size, baudRate, resetMode, espflasher.ProgressFunc(func(current, total int) {
-			emit(current, total, "reading")
+			opEmit(current, total, "reading")
 		}))
 		if err != nil {
 			if syncResult := handleSyncError(err); syncResult != nil {
@@ -457,7 +467,8 @@ func handleReadNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
@@ -486,7 +497,8 @@ func handleWriteNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	// Parse entries array
@@ -558,7 +570,8 @@ func handleNVSSet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	entriesRaw, ok := req.GetArguments()["entries"].([]interface{})
@@ -624,7 +637,8 @@ func handleNVSDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	sess, factory := session.AcquireForFlasher(port)
+	connectEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	sess, factory := session.AcquireForFlasher(port, connectStatusEmitter(connectEmit))
 	defer session.ReleaseFlasherDeferred(sess, port)
 
 	namespace, err := req.RequireString("namespace")

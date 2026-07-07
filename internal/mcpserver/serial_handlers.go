@@ -217,7 +217,9 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	msg := fmt.Sprintf("Started reading from %s at %d baud", port, baud)
 
 	if autoReset && session.IsUSBPort(port) {
-		sess, factory := session.AcquireForFlasher(port)
+		// No progress/emitter context here (this is serial_start's internal
+		// auto-reset, not an esp_* tool call) — no connect-status callback.
+		sess, factory := session.AcquireForFlasher(port, nil)
 		resetErr := esp.ResetESP(factory, port, "")
 		newPort := session.ReleaseFlasherImmediate(sess, port)
 
