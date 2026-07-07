@@ -363,6 +363,10 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 
 	result, err := flash.Flash(sess.GetManager(), command, args, flashOpts)
 	if err != nil {
+		// Flash() rejected the command (e.g. BR-51 preflight) before doing
+		// anything to port state -- release the session we acquired above so
+		// it doesn't stay stuck in ModeExternal.
+		session.ReleaseExternal(sess, originalPort)
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
