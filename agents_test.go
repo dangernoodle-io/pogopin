@@ -49,7 +49,8 @@ var agentNameFalsePositives = map[string]bool{
 var pogopinToolShortNames = map[string]bool{
 	"serial_list": true, "serial_start": true, "serial_read": true,
 	"serial_write": true, "serial_stop": true, "serial_status": true,
-	"esp_flash": true, "esp_erase": true, "esp_info": true,
+	"serial_restart": true,
+	"esp_flash":      true, "esp_erase": true, "esp_info": true,
 	"esp_register": true, "esp_reset": true, "esp_read_flash": true,
 	"esp_read_nvs": true, "esp_write_nvs": true, "esp_nvs_set": true,
 	"esp_nvs_delete": true, "flash_external": true, "decode_backtrace": true,

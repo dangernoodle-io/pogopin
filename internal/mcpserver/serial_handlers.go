@@ -205,6 +205,15 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		bufSize = int(v)
 	}
 
+	return startSessionWithAutoReset(req, port, baud, bufSize, "Started")
+}
+
+// startSessionWithAutoReset starts (or restarts) buffered monitoring on port
+// via session.StartSession, then runs the same auto-reset dance for USB CDC
+// devices that handleSerialStart has always done, returning a status message.
+// verb ("Started"/"Restarted") lets callers share this body with differing
+// wording. Shared by handleSerialStart and handleSerialRestart.
+func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSize int, verb string) (*mcp.CallToolResult, error) {
 	if err := session.StartSession(port, baud, bufSize); err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
 	}
@@ -214,7 +223,7 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		autoReset = v
 	}
 
-	msg := fmt.Sprintf("Started reading from %s at %d baud", port, baud)
+	msg := fmt.Sprintf("%s reading from %s at %d baud", verb, port, baud)
 
 	if autoReset && session.IsUSBPort(port) {
 		// No progress/emitter context here (this is serial_start's internal
@@ -233,6 +242,40 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	}
 
 	return mcp.NewToolResultText(msg), nil
+}
+
+// handleSerialRestart performs an atomic stop+start on a port to re-trigger
+// a DTR/RTS reset without separate serial_stop/serial_start calls. The
+// entire sequence runs under a single portsMu acquisition inside
+// session.RestartSession so a concurrent serial_start/serial_stop/
+// serial_restart on the same port can't interleave in an unlocked gap
+// (BR-21 HIGH). If the port is currently open, its baud is preserved as the
+// default (request args override). If the port isn't open, this behaves
+// like a plain serial_start (no stop needed).
+func handleSerialRestart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	unlockHardwareTier()
+	port, err := req.RequireString("port")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	var baudOverride *int
+	if baudFloat, ok := req.GetArguments()["baud"].(float64); ok {
+		b := int(baudFloat)
+		baudOverride = &b
+	}
+
+	bufSize := 1000
+	if v, ok := req.GetArguments()["buffer_size"].(float64); ok {
+		bufSize = int(v)
+	}
+
+	baud, err := session.RestartSession(port, baudOverride, bufSize)
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+
+	return mcp.NewToolResultText(fmt.Sprintf("Restarted reading from %s at %d baud", port, baud)), nil
 }
 
 func handleSerialRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {

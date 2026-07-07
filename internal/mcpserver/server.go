@@ -81,8 +81,9 @@ var activeServer *server.MCPServer
 
 func setActiveServer(s *server.MCPServer) { activeServer = s }
 
-// unlockHardwareTier is called by serial_list and serial_start handlers to
-// register the hardware tier on first hardware-workflow signal.
+// unlockHardwareTier is called by serial_list, serial_start, and
+// serial_restart handlers to register the hardware tier on first
+// hardware-workflow signal.
 func unlockHardwareTier() { registerHardwareTools(activeServer) }
 
 // resetHardwareTier resets the lazy-registration gate and active server for

@@ -38,12 +38,13 @@ func TestRegisterToolsOnlyRegistersCoreTier(t *testing.T) {
 	registerTools(s)
 
 	names := toolNames(s)
-	// Core tier: 6 serial_* + decode_backtrace
+	// Core tier: 7 serial_* + decode_backtrace
 	assert.True(t, names["serial_list"])
 	assert.True(t, names["serial_start"])
 	assert.True(t, names["serial_read"])
 	assert.True(t, names["serial_write"])
 	assert.True(t, names["serial_stop"])
+	assert.True(t, names["serial_restart"])
 	assert.True(t, names["serial_status"])
 	assert.True(t, names["decode_backtrace"])
 	// Hardware tier: not registered until unlocked.
