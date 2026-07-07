@@ -138,6 +138,90 @@ func TestWrite_SilentOnUnwritableDir(t *testing.T) {
 	}
 }
 
+func TestWrite_PortState_SessionIDAndPID_SetWhenEnvSet(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "sess-abc123")
+
+	tmpDir := t.TempDir()
+	testPath := filepath.Join(tmpDir, "status.json")
+	prev := SetStatusFilePath(testPath)
+	defer SetStatusFilePath(prev)
+
+	ps := PortState{
+		Port:      "/dev/ttyUSB0",
+		Baud:      115200,
+		Mode:      "reader",
+		Running:   true,
+		SessionID: os.Getenv("CLAUDE_CODE_SESSION_ID"),
+		PID:       12345,
+	}
+	Write([]PortState{ps})
+
+	data, err := os.ReadFile(testPath)
+	if err != nil {
+		t.Fatalf("failed to read status file: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+	ports, ok := raw["ports"].([]interface{})
+	if !ok || len(ports) != 1 {
+		t.Fatalf("expected 1 port, got %v", raw["ports"])
+	}
+	entry, ok := ports[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected port entry to be an object, got %v", ports[0])
+	}
+	if entry["session_id"] != "sess-abc123" {
+		t.Errorf("session_id = %v, want sess-abc123", entry["session_id"])
+	}
+	if entry["pid"] != float64(12345) {
+		t.Errorf("pid = %v, want 12345", entry["pid"])
+	}
+}
+
+func TestWrite_PortState_SessionIDOmittedWhenEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	testPath := filepath.Join(tmpDir, "status.json")
+	prev := SetStatusFilePath(testPath)
+	defer SetStatusFilePath(prev)
+
+	ps := PortState{
+		Port:    "/dev/ttyUSB0",
+		Baud:    115200,
+		Mode:    "reader",
+		Running: true,
+		// SessionID and PID left zero-valued, as when CLAUDE_CODE_SESSION_ID
+		// is unset (omitempty should drop session_id; pid=0 also omitted).
+	}
+	Write([]PortState{ps})
+
+	data, err := os.ReadFile(testPath)
+	if err != nil {
+		t.Fatalf("failed to read status file: %v", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v", err)
+	}
+	ports, ok := raw["ports"].([]interface{})
+	if !ok || len(ports) != 1 {
+		t.Fatalf("expected 1 port, got %v", raw["ports"])
+	}
+	entry, ok := ports[0].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected port entry to be an object, got %v", ports[0])
+	}
+	if _, present := entry["session_id"]; present {
+		t.Errorf("session_id should be omitted when empty, got %v", entry["session_id"])
+	}
+	if _, present := entry["pid"]; present {
+		t.Errorf("pid should be omitted when zero, got %v", entry["pid"])
+	}
+}
+
 func TestWrite_AtomicRename(t *testing.T) {
 	tmpDir := t.TempDir()
 	testPath := filepath.Join(tmpDir, "status.json")

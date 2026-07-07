@@ -35,6 +35,13 @@ type PortState struct {
 	Running      bool    `json:"running"`
 	Reconnecting bool    `json:"reconnecting"`
 	LastError    *string `json:"last_error,omitempty"`
+	// SessionID is the CLAUDE_CODE_SESSION_ID of the pogo server process that
+	// owns this port entry. Empty (omitted) when the env var is unset, e.g.
+	// standalone runs outside Claude Code or older callers.
+	SessionID string `json:"session_id,omitempty"`
+	// PID is the OS process ID of the pogo server process that owns this
+	// port entry.
+	PID int `json:"pid,omitempty"`
 }
 
 // StatusFile represents the entire status file structure.

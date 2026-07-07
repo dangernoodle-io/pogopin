@@ -96,6 +96,8 @@ func portStateFor(p string, s *PortSession) status.PortState {
 		Running:      s.mgr.IsRunning(),
 		Reconnecting: s.mgr.IsReconnecting(),
 		LastError:    lastErr,
+		SessionID:    os.Getenv("CLAUDE_CODE_SESSION_ID"),
+		PID:          os.Getpid(),
 	}
 }
 

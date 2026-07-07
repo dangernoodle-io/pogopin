@@ -64,11 +64,12 @@ Tools register in two tiers. The **core tier** (7× `serial_*` + `decode_backtra
 
 ## Plugin
 
-`plugin/` contains the Claude Code plugin wrapper (pogopin-mcp) — same pattern as espidf-tools: SessionStart hook installs release binary, UserPromptSubmit hook injects ESP-IDF context.
+`plugin/` contains the Claude Code plugin wrapper (pogopin-mcp) — same pattern as espidf-tools: SessionStart hook installs release binary, UserPromptSubmit hook injects ESP-IDF context, PreToolUse hook warns on cross-session port conflicts.
 
 - `plugin/.claude-plugin/plugin.json` — manifest; `mcpServers.pogopin.command` points at `${CLAUDE_PLUGIN_DATA}/bin/pogo server`
-- `plugin/hooks/hooks.json` — `SessionStart` hook running `scripts/install.sh` to fetch the release binary
+- `plugin/hooks/hooks.json` — `SessionStart` hook running `scripts/install.sh` to fetch the release binary; `PreToolUse` hook (matcher `mcp__plugin_pogopin-mcp_pogopin__.*`) running `scripts/pre-tool-port-check.js`
 - `plugin/scripts/install.sh` — downloads the GitHub release archive, verifies SHA256, installs to plugin data dir
+- `plugin/scripts/pre-tool-port-check.js` — warn-only PreToolUse hook (BR-31): reads `~/.cache/pogopin/status.json`, warns via `additionalContext`/`systemMessage` (never denies) only when the target port is `running` under a *different* `CLAUDE_CODE_SESSION_ID` than the calling hook's and that session's owning process is still alive. Silent on the normal same-session flow, and gracefully degrades to no-warning on older servers or when `CLAUDE_CODE_SESSION_ID` is unset (status entries lack `session_id`).
 - `plugin/scripts/statusline.js` — Node.js widget for ccstatusline custom-command that renders serial port state from `~/.cache/pogopin/status.json`
 
 **No plugin version field**: `plugin/.claude-plugin/plugin.json` intentionally omits `version`. When absent, Claude Code keys its plugin cache on the source commit sha, so changing the `marketplace.json` ref to a new tag automatically invalidates the cache — no lockstep bump required. Release automation only needs to update the marketplace ref.

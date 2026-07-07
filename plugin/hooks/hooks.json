@@ -5,6 +5,12 @@
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/context.sh" } ] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__plugin_pogopin-mcp_pogopin__.*",
+        "hooks": [ { "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-port-check.js" } ]
+      }
     ]
   }
 }
