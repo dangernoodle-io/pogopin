@@ -15,6 +15,7 @@ func registerFlashExternalTool(s *server.MCPServer) {
 		mcp.WithString("output_filter", mcp.Description("Regex pattern to filter command output lines")),
 		mcp.WithBoolean("shell", mcp.Description("Run command via sh -c (enables &&, pipes, globs; args ignored)")),
 		mcp.WithString("cwd", mcp.Description("Working directory for the command")),
+		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait after restart and capture boot output (default 2.0, 0 disables)")),
 	)
 	s.AddTool(flashTool, withRecover(handleSerialFlash))
 }

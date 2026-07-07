@@ -12,6 +12,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	goSerial "go.bug.st/serial"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 
@@ -242,4 +243,93 @@ func TestHandleFlashBootWaitZero(t *testing.T) {
 	tc, ok := result.Content[0].(mcp.TextContent)
 	require.True(t, ok)
 	assert.NotContains(t, tc.Text, "boot_output")
+}
+
+// TestHandleSerialFlashBootCapture pins BR-30: flash_external must capture boot
+// output after restarting the managed port, matching handleFlash's shape.
+func TestHandleSerialFlashBootCapture(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	m := serial.NewManagerWithBufferSize(1000)
+	m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	session.InsertPort("test-port", session.NewPortSession(m, "test-port", m.Baud(), session.ModeReader))
+
+	err := m.Start("test-port", 115200)
+	require.NoError(t, err)
+	assert.True(t, m.IsRunning())
+
+	orig := bootCaptureWait
+	bootCaptureWait = func(d time.Duration) {
+		m.AddToBuffer("boot: flashed")
+	}
+	t.Cleanup(func() { bootCaptureWait = orig })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":      "test-port",
+		"command":   "echo",
+		"args":      []interface{}{"hello"},
+		"boot_wait": float64(1.0),
+	}
+	result, err := handleSerialFlash(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "boot_output")
+	assert.Contains(t, tc.Text, "boot: flashed")
+
+	portCount := session.PortCount()
+	if portCount > 0 {
+		mgr, _, _ := session.ResolveSession(map[string]interface{}{})
+		if mgr != nil && mgr.IsRunning() {
+			_ = mgr.Stop()
+		}
+	}
+}
+
+// TestHandleSerialFlashBootWaitZeroOmitsField pins that boot_wait=0 (or the
+// default with nothing captured) omits boot_output entirely, like handleFlash.
+func TestHandleSerialFlashBootWaitZeroOmitsField(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	m := serial.NewManagerWithBufferSize(1000)
+	m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	session.InsertPort("test-port", session.NewPortSession(m, "test-port", m.Baud(), session.ModeReader))
+
+	err := m.Start("test-port", 115200)
+	require.NoError(t, err)
+	assert.True(t, m.IsRunning())
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":      "test-port",
+		"command":   "echo",
+		"args":      []interface{}{"hello"},
+		"boot_wait": float64(0),
+	}
+	result, err := handleSerialFlash(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.NotContains(t, tc.Text, "boot_output")
+
+	portCount := session.PortCount()
+	if portCount > 0 {
+		mgr, _, _ := session.ResolveSession(map[string]interface{}{})
+		if mgr != nil && mgr.IsRunning() {
+			_ = mgr.Stop()
+		}
+	}
 }

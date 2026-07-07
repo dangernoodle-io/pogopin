@@ -364,6 +364,11 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
+	bootWait := 2.0
+	if bw, ok := req.GetArguments()["boot_wait"].(float64); ok {
+		bootWait = bw
+	}
+
 	var args []string
 	if v, ok := req.GetArguments()["args"].([]interface{}); ok {
 		for _, a := range v {
@@ -416,11 +421,14 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	// Handle port re-enumeration
 	newPort := session.ReleaseExternal(sess, originalPort)
 
+	bootLines := captureBootOutput(sess, bootWait)
+
 	type flashResponse struct {
 		*flash.Result
-		NewPort string `json:"new_port,omitempty"`
+		NewPort    string   `json:"new_port,omitempty"`
+		BootOutput []string `json:"boot_output,omitempty"`
 	}
-	resp := flashResponse{Result: &result, NewPort: newPort}
+	resp := flashResponse{Result: &result, NewPort: newPort, BootOutput: bootLines}
 
 	data, err := json.MarshalIndent(resp, "", "  ")
 	if err != nil {
