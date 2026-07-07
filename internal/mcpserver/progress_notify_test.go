@@ -299,6 +299,119 @@ func TestHandleEraseEmitsRealProgressNotifications(t *testing.T) {
 	assert.EqualValues(t, 100, frames[len(frames)-1]["progress"], "final frame must reach completion")
 }
 
+func TestHandleReadFlashEmitsRealProgressNotifications(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	testData := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	flasher := &mockFlasher{
+		readFlashVal: testData,
+		readFlashProgress: func(progress espflasher.ProgressFunc) {
+			progress(0, 1000)    // 0%
+			progress(10, 1000)   // 1%
+			progress(15, 1000)   // still 1% -> dropped
+			progress(500, 1000)  // 50%
+			progress(500, 1000)  // 50% again -> dropped
+			progress(999, 1000)  // 99%
+			progress(1000, 1000) // 100% completion, always emitted
+		},
+	}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return flasher, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("read-flash-progress")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":   t.TempDir(),
+		"offset": float64(0x1000),
+		"size":   float64(1000),
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_read_flash", args, "tok-read"))
+	requireToolCallOK(t, msg)
+
+	frames := progressFrames(t, sess.ch)
+	require.Len(t, frames, 5, "expected throttled percent-gated frames, not one per byte-progress call")
+
+	lastProgress := -1
+	for i, f := range frames {
+		assert.Equal(t, "tok-read", f["progressToken"], "frame %d token", i)
+		assert.Equal(t, "reading", f["message"], "frame %d message", i)
+		assert.EqualValues(t, 1000, f["total"], "frame %d total", i)
+		progress, ok := f["progress"].(int)
+		require.True(t, ok, "frame %d progress must be an int", i)
+		assert.Greater(t, progress, lastProgress, "frame %d progress must strictly increase", i)
+		lastProgress = progress
+	}
+	assert.EqualValues(t, 1000, frames[len(frames)-1]["progress"], "final frame must reach completion")
+}
+
+func TestHandleReadFlashNoProgressTokenEmitsNoNotifications(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	testData := []byte{0xAA, 0xBB, 0xCC, 0xDD}
+	flasher := &mockFlasher{
+		readFlashVal: testData,
+		readFlashProgress: func(progress espflasher.ProgressFunc) {
+			progress(0, 1000)
+			progress(500, 1000)
+			progress(1000, 1000)
+		},
+	}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return flasher, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("read-flash-no-token")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":   t.TempDir(),
+		"offset": float64(0x1000),
+		"size":   float64(1000),
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_read_flash", args, nil))
+	requireToolCallOK(t, msg)
+
+	frames := progressFrames(t, sess.ch)
+	assert.Empty(t, frames, "no progressToken supplied -> zero progress notifications")
+}
+
+func TestHandleReadFlashMD5ModeEmitsNoProgressNotifications(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	flasher := &mockFlasher{
+		flashMD5Val: "5d41402abc4b2a76b9719d911017c592",
+	}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return flasher, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("read-flash-md5")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":   t.TempDir(),
+		"offset": float64(0x1000),
+		"size":   float64(1000),
+		"md5":    true,
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_read_flash", args, "tok-md5"))
+	requireToolCallOK(t, msg)
+
+	frames := progressFrames(t, sess.ch)
+	assert.Empty(t, frames, "md5 mode has no chunked seam -> zero progress notifications even with a token")
+}
+
 func TestHandleEraseNoProgressTokenEmitsNoNotifications(t *testing.T) {
 	setupTestPorts(t)
 	setupTestFlasherFactory(t)

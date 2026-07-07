@@ -723,7 +723,7 @@ func TestReadFlashDataSuccess(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := ReadFlashData(factory, "/dev/ttyUSB0", 0x2000, 4, 0, "")
+	result, err := ReadFlashData(factory, "/dev/ttyUSB0", 0x2000, 4, 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(0x2000), result.Offset)
 	assert.Equal(t, uint32(4), result.Size)
@@ -741,7 +741,7 @@ func TestReadFlashDataBaudDefault(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 115200, capturedOpts.BaudRate)
 }
@@ -754,7 +754,7 @@ func TestReadFlashDataError(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.Error(t, err)
 }
 
@@ -763,7 +763,7 @@ func TestReadFlashDataFactoryError(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := ReadFlashData(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.Error(t, err)
 }
 

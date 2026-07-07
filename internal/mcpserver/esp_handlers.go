@@ -424,7 +424,10 @@ func handleESPReadFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 		return mcp.NewToolResultText(string(data)), nil
 	} else {
 		// Read mode
-		flashResult, err := esp.ReadFlashData(factory, port, offset, size, baudRate, resetMode)
+		emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+		flashResult, err := esp.ReadFlashData(factory, port, offset, size, baudRate, resetMode, espflasher.ProgressFunc(func(current, total int) {
+			emit(current, total, "reading")
+		}))
 		if err != nil {
 			if syncResult := handleSyncError(err); syncResult != nil {
 				return syncResult, nil
