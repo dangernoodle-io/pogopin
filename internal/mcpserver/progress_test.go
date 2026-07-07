@@ -6,6 +6,7 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
+	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 
 func TestProgressTokenNilMeta(t *testing.T) {
@@ -95,6 +96,46 @@ func TestNewProgressEmitterZeroTotalNoPanic(t *testing.T) {
 		emit(5, -1, "flashing")
 	})
 	assert.Empty(t, calls)
+}
+
+func TestConnectStatusEmitterCleanConnectFourDistinctSteps(t *testing.T) {
+	var calls []progressCall
+	emit := newProgressEmitter(func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	})
+	connectStatus := connectStatusEmitter(emit)
+
+	// Clean connect: reset/sync retry-capable (maxAttempts=7), detect_chip
+	// and load_stub single-shot (maxAttempts=0). Each phase must land on
+	// its own fixed ordinal/4 so every step is a distinct integer percent.
+	connectStatus(espflasher.ConnectPhaseReset, 1, 7, "entering download mode")
+	connectStatus(espflasher.ConnectPhaseSync, 1, 7, "syncing")
+	connectStatus(espflasher.ConnectPhaseDetectChip, 0, 0, "detecting chip")
+	connectStatus(espflasher.ConnectPhaseLoadStub, 0, 0, "loading stub")
+
+	assert.Equal(t, []progressCall{
+		{1, 4, "reset: entering download mode (attempt 1/7)"},
+		{2, 4, "sync: syncing (attempt 1/7)"},
+		{3, 4, "detect_chip: detecting chip"},
+		{4, 4, "load_stub: loading stub"},
+	}, calls)
+}
+
+func TestConnectStatusEmitterUnknownPhaseSkipped(t *testing.T) {
+	var calls []progressCall
+	emit := newProgressEmitter(func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	})
+	connectStatus := connectStatusEmitter(emit)
+
+	// An unrecognized phase must be skipped entirely, not emitted as a
+	// spurious 0/4 (0%) tick.
+	connectStatus(espflasher.ConnectPhase("unknown"), 0, 0, "mystery phase")
+	connectStatus(espflasher.ConnectPhaseSync, 1, 7, "syncing")
+
+	assert.Equal(t, []progressCall{
+		{2, 4, "sync: syncing (attempt 1/7)"},
+	}, calls)
 }
 
 func TestSendProgressNilTokenIsNoop(t *testing.T) {

@@ -132,7 +132,7 @@ func TestAcquireForFlasher_WritesStatus(t *testing.T) {
 	defer func() { isUSBPortFn = orig }()
 	isUSBPortFn = func(s string) bool { return false }
 
-	sess, factory := AcquireForFlasher("/dev/ttyUSB0")
+	sess, factory := AcquireForFlasher("/dev/ttyUSB0", nil)
 	require.NotNil(t, sess)
 	require.NotNil(t, factory)
 

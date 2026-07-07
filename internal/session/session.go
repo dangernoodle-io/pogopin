@@ -234,7 +234,12 @@ func OpenForFlasher(portName string) func(name string, mode *goSerial.Mode) (goS
 // AcquireForFlasher prepares a port for ESP flashing. Returns the session and a flasher factory.
 // The factory handles caching: if a flasher was deferred, it wraps it as borrowed; otherwise,
 // it returns a real flasher from newFlasherFactory.
-func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
+//
+// connectStatus, if non-nil, is wired onto FlasherOptions.ConnectStatus immediately before the
+// real construction call (retryFlasherCreate / newFlasherFactory) so it observes the connect
+// sequence (reset/sync/detect_chip/load_stub). The cached/borrowed-flasher path never calls
+// New, so it never fires connectStatus — no connect happens there, which is correct.
+func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) (*PortSession, esp.FlasherFactory) {
 	// Snapshot the ports that exist right now, before any reset-triggered
 	// re-enumeration happens under this acquire. Used by FindSimilarPort /
 	// WaitForPort to avoid matching an unrelated board's pre-existing port
@@ -334,6 +339,11 @@ func AcquireForFlasher(port string) (*PortSession, esp.FlasherFactory) {
 		if isUSBPortFn(portArg) && opts.ResetMode == espflasher.ResetAuto {
 			opts.ResetMode = espflasher.ResetUSBJTAG
 		}
+		// Wire the connect-status callback before New actually connects.
+		// retryFlasherCreate may retry this call several times (USB
+		// re-enumeration); opts is a single shared pointer so this only
+		// needs setting once here.
+		opts.ConnectStatus = connectStatus
 		// Create real flasher and wrap as borrowed so Reset() is no-op
 		// and Close() caches it for the next tool call.
 		f, err := retryFlasherCreate(portArg, opts, sess)

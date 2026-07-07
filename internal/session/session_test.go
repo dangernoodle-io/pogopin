@@ -457,7 +457,7 @@ func TestAcquireForFlasherNewSession(t *testing.T) {
 		return &mockFlasher{chipNameVal: "ESP32"}, nil
 	}
 
-	sess, factory := AcquireForFlasher("/dev/test")
+	sess, factory := AcquireForFlasher("/dev/test", nil)
 	require.NotNil(t, sess)
 	assert.Equal(t, "/dev/test", sess.port)
 	assert.Equal(t, ModeFlasher, sess.mode)
@@ -492,7 +492,7 @@ func TestAcquireForFlasherStopsReader(t *testing.T) {
 	}
 	portsMu.Unlock()
 
-	sess, _ := AcquireForFlasher("/dev/test")
+	sess, _ := AcquireForFlasher("/dev/test", nil)
 	assert.Equal(t, ModeFlasher, sess.mode)
 }
 
@@ -517,7 +517,7 @@ func TestAcquireForFlasherReusesCachedFlasher(t *testing.T) {
 	}
 	portsMu.Unlock()
 
-	sess, factory := AcquireForFlasher("/dev/test")
+	sess, factory := AcquireForFlasher("/dev/test", nil)
 	require.NotNil(t, factory)
 	require.NotNil(t, sess)
 
@@ -567,7 +567,7 @@ func TestAcquireForFlasherDiscardsDeadCachedFlasher(t *testing.T) {
 	}
 	portsMu.Unlock()
 
-	sess, factory := AcquireForFlasher("/dev/test")
+	sess, factory := AcquireForFlasher("/dev/test", nil)
 	require.NotNil(t, sess)
 
 	f, err := factory("/dev/test", &espflasher.FlasherOptions{})
@@ -602,7 +602,7 @@ func TestAcquireForFlasherUsesRealFactory(t *testing.T) {
 		return realMock, nil
 	}
 
-	sess, factory := AcquireForFlasher("/dev/test")
+	sess, factory := AcquireForFlasher("/dev/test", nil)
 	require.NotNil(t, sess)
 	require.NotNil(t, factory)
 
@@ -611,6 +611,50 @@ func TestAcquireForFlasherUsesRealFactory(t *testing.T) {
 	borrowed, ok := f.(*BorrowedFlasher)
 	require.True(t, ok, "factory should return BorrowedFlasher")
 	assert.Equal(t, realMock, borrowed.Flasher)
+}
+
+// TestAcquireForFlasherWiresConnectStatusOnRealConstruction drives a non-nil
+// connectStatus through the real flasher-construction path and asserts it
+// lands on the FlasherOptions handed to the factory before New is called.
+func TestAcquireForFlasherWiresConnectStatusOnRealConstruction(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupTestFlasherFactory(t)
+
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	realMock := &mockFlasher{chipNameVal: "ESP32"}
+	var gotOpts *espflasher.FlasherOptions
+	newFlasherFactory = func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		gotOpts = opts
+		return realMock, nil
+	}
+
+	var spyCalls []string
+	spy := espflasher.ConnectStatusFunc(func(phase espflasher.ConnectPhase, attempt, maxAttempts int, message string) {
+		spyCalls = append(spyCalls, string(phase))
+	})
+
+	sess, factory := AcquireForFlasher("/dev/test", spy)
+	require.NotNil(t, sess)
+	require.NotNil(t, factory)
+
+	f, err := factory("/dev/test", &espflasher.FlasherOptions{})
+	require.NoError(t, err)
+	_, ok := f.(*BorrowedFlasher)
+	require.True(t, ok, "factory should return BorrowedFlasher")
+
+	require.NotNil(t, gotOpts)
+	require.NotNil(t, gotOpts.ConnectStatus, "ConnectStatus must be wired onto FlasherOptions before real construction")
+
+	gotOpts.ConnectStatus(espflasher.ConnectPhaseReset, 1, 7, "entering download mode")
+	assert.Equal(t, []string{"reset"}, spyCalls, "connectStatus wired onto opts should be the caller-supplied spy")
 }
 
 // ReleaseFlasherImmediate tests
@@ -911,7 +955,7 @@ func TestModeTransitionReaderToFlasherToPendingToReader(t *testing.T) {
 	portsMu.Unlock()
 
 	// Transition to ModeFlasher
-	sess, _ := AcquireForFlasher(tmpfile.Name())
+	sess, _ := AcquireForFlasher(tmpfile.Name(), nil)
 	assert.Equal(t, ModeFlasher, sess.mode)
 
 	// Cache a flasher
@@ -965,7 +1009,7 @@ func TestFactoryRetriesOnSyncErrorUSB(t *testing.T) {
 		return realMock, nil
 	}
 
-	sess, factory := AcquireForFlasher(port)
+	sess, factory := AcquireForFlasher(port, nil)
 	require.NotNil(t, sess)
 
 	f, err := factory(port, &espflasher.FlasherOptions{})
@@ -1014,7 +1058,7 @@ func TestFactoryTriesFindSimilarPortOnSyncError(t *testing.T) {
 		}, nil
 	}
 
-	sess, factory := AcquireForFlasher(originalPort)
+	sess, factory := AcquireForFlasher(originalPort, nil)
 	require.NotNil(t, sess)
 
 	// The device re-enumerates: newPort newly appears, originalPort is gone.
@@ -1078,7 +1122,7 @@ func TestFactoryIgnoresPreExistingUnrelatedPortOnSyncError(t *testing.T) {
 		}, nil
 	}
 
-	sess, factory := AcquireForFlasher(originalPort)
+	sess, factory := AcquireForFlasher(originalPort, nil)
 	require.NotNil(t, sess)
 
 	// After the original port vanishes, only the pre-existing unrelated
@@ -1123,7 +1167,7 @@ func TestFactoryNoRetryOnNonSyncError(t *testing.T) {
 		return nil, fmt.Errorf("permission denied")
 	}
 
-	sess, factory := AcquireForFlasher(port)
+	sess, factory := AcquireForFlasher(port, nil)
 	require.NotNil(t, sess)
 
 	f, err := factory(port, &espflasher.FlasherOptions{})
@@ -1156,7 +1200,7 @@ func TestFactoryOverridesResetModeForUSBCDC(t *testing.T) {
 		return &mockFlasher{chipNameVal: "ESP32-S3"}, nil
 	}
 
-	sess, factory := AcquireForFlasher(port)
+	sess, factory := AcquireForFlasher(port, nil)
 	require.NotNil(t, sess)
 
 	// Pass ResetAuto (the default) — should be overridden to ResetUSBJTAG for USB CDC
@@ -1188,7 +1232,7 @@ func TestFactoryKeepsExplicitResetModeForUSBCDC(t *testing.T) {
 		return &mockFlasher{chipNameVal: "ESP32-S3"}, nil
 	}
 
-	sess, factory := AcquireForFlasher(port)
+	sess, factory := AcquireForFlasher(port, nil)
 	require.NotNil(t, sess)
 
 	// Pass explicit ResetNoReset — should NOT be overridden
