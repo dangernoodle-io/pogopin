@@ -59,11 +59,20 @@ function pidFromEntry(fileName, parsed) {
 
 // readLivePorts globs statusDir() for per-process status files, drops ports
 // belonging to a file whose owning process is dead or whose updated_at is
-// older than STALE_SECONDS, and merges the surviving ports[] from all files
-// into one flat array. Fully fail-open: any error (missing dir, bad json)
-// results in that file (or the whole call) contributing no ports. Never
-// throws.
-function readLivePorts() {
+// older than opts.maxAgeSeconds (default STALE_SECONDS), and merges the
+// surviving ports[] from all files into one flat array. Each returned port
+// carries its source file's updated_at so callers can compute per-port age
+// (e.g. for a tighter freshness filter than the default staleness window).
+// Fully fail-open: any error (missing dir, bad json) results in that file
+// (or the whole call) contributing no ports. Never throws.
+//
+// opts.maxAgeSeconds is optional and additive: omitting it preserves the
+// original STALE_SECONDS behavior existing callers (e.g. the BR-31
+// pre-tool-port-check hook) depend on.
+function readLivePorts(opts) {
+  const maxAgeSeconds =
+    opts && typeof opts.maxAgeSeconds === 'number' ? opts.maxAgeSeconds : STALE_SECONDS;
+
   let entries;
   try {
     entries = fs.readdirSync(statusDir());
@@ -88,12 +97,12 @@ function readLivePorts() {
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.ports)) continue;
 
     const updatedAt = typeof parsed.updated_at === 'number' ? parsed.updated_at : 0;
-    if (nowSec - updatedAt > STALE_SECONDS) continue;
+    if (nowSec - updatedAt > maxAgeSeconds) continue;
 
     const pid = pidFromEntry(name, parsed);
     if (!pidAlive(pid)) continue;
 
-    merged.push(...parsed.ports);
+    merged.push(...parsed.ports.map(p => (p && typeof p === 'object' ? { ...p, updated_at: updatedAt } : p)));
   }
 
   return merged;

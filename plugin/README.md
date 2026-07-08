@@ -46,6 +46,8 @@ Disabling the whole plugin also removes the agents, but takes the MCP tools with
 ## Configuration
 
 - `POGOPIN_DEV_BINARY` — path to local dev binary (bypasses GitHub download)
+- `POGOPIN_STATUS_DIR` — override the status directory `scripts/statusline.js` and `scripts/pre-tool-port-check.js` read from (default: `~/.cache/pogopin/status` per-platform)
+- `POGOPIN_STATUSLINE_MODE` — controls `scripts/statusline.js` visibility. `always` (default, unchanged behavior): render live ports, print `serial: idle` when none. `ports-only`: render live ports, exit silently (no output) when none. `fresh-only`: render only ports updated within the last 30s, exit silently when none qualify. Unknown/empty values fall back to `always`.
 
 ## Server
 
