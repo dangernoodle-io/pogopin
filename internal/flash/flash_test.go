@@ -93,7 +93,7 @@ func TestEnvWithPath(t *testing.T) {
 // if no serial port has been configured.
 func TestFlashRequiresConfiguredPort(t *testing.T) {
 	mgr := &mockManager{}
-	_, err := Flash(mgr, "echo", []string{"hello"}, nil)
+	_, err := Flash(mgr, "echo", []string{"hello"}, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no serial port configured")
 }
@@ -132,7 +132,7 @@ func TestFlashStopsAndRestarts(t *testing.T) {
 			originalMgr.running = true
 			return nil
 		},
-	}, "echo", []string{"flash output"}, nil)
+	}, "echo", []string{"flash output"}, nil, nil)
 	require.NoError(t, err)
 
 	assert.True(t, result.Success)
@@ -187,6 +187,53 @@ func (w *wrappedManager) SetPortName(name string) {
 
 // TestFlashCommandFailure verifies that Flash() correctly handles command
 // execution failures and returns Success=false.
+// TestFlashStatusPhaseSequence verifies Flash() emits its three coarse
+// status ticks -- stopping port, running command, restarting -- in order,
+// with no byte denominator. CapturingBoot/Complete are emitted by callers
+// (e.g. handleSerialFlash) after Flash returns, not by Flash itself.
+func TestFlashStatusPhaseSequence(t *testing.T) {
+	orig := retryDelays
+	retryDelays = []time.Duration{time.Millisecond}
+	defer func() { retryDelays = orig }()
+
+	mgr := &mockManager{
+		portName: "test-port",
+		baud:     115200,
+		running:  true,
+	}
+
+	var ticks []string
+	_, err := Flash(mgr, "echo", []string{"hello"}, nil, func(phase string, current, total int) {
+		ticks = append(ticks, phase)
+		assert.Equal(t, 0, current)
+		assert.Equal(t, 0, total)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{
+		StatusPhaseStoppingPort,
+		StatusPhaseRunningCmd,
+		StatusPhaseRestarting,
+	}, ticks)
+}
+
+// TestFlashNilStatusNoop verifies a nil status callback is a silent no-op.
+func TestFlashNilStatusNoop(t *testing.T) {
+	orig := retryDelays
+	retryDelays = []time.Duration{time.Millisecond}
+	defer func() { retryDelays = orig }()
+
+	mgr := &mockManager{
+		portName: "test-port",
+		baud:     115200,
+		running:  true,
+	}
+
+	assert.NotPanics(t, func() {
+		_, err := Flash(mgr, "echo", []string{"hello"}, nil, nil)
+		require.NoError(t, err)
+	})
+}
+
 func TestFlashCommandFailure(t *testing.T) {
 	mgr := &mockManager{
 		portName: "test-port",
@@ -194,7 +241,7 @@ func TestFlashCommandFailure(t *testing.T) {
 		running:  true,
 	}
 
-	result, err := Flash(mgr, "false", nil, nil)
+	result, err := Flash(mgr, "false", nil, nil, nil)
 	require.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "Command failed")
@@ -234,7 +281,7 @@ func TestFlashRetriesOnStartFailure(t *testing.T) {
 			mgr.running = true
 			return nil
 		},
-	}, "echo", []string{"flash"}, nil)
+	}, "echo", []string{"flash"}, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 
@@ -271,7 +318,7 @@ func TestFlashRetriesAllFail(t *testing.T) {
 			mu.Unlock()
 			return fmt.Errorf("port busy")
 		},
-	}, "echo", []string{"flash"}, nil)
+	}, "echo", []string{"flash"}, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "Warning: failed to restart serial after 5 attempts")
@@ -321,7 +368,7 @@ func TestFlashPortReenumeration(t *testing.T) {
 			mgr.running = true
 			return nil
 		},
-	}, "echo", []string{"test"}, nil)
+	}, "echo", []string{"test"}, nil, nil)
 
 	require.NoError(t, err)
 	assert.True(t, result.Success)
@@ -358,7 +405,7 @@ func TestFlashPortReenumerationNoMatch(t *testing.T) {
 		startFn: func(port string, baud int) error {
 			return fmt.Errorf("port not found")
 		},
-	}, "echo", []string{"test"}, nil)
+	}, "echo", []string{"test"}, nil, nil)
 
 	require.NoError(t, err)
 	assert.True(t, result.Success)
@@ -405,7 +452,7 @@ func TestFlashSnapshotsKnownPortsBeforeExternalOp(t *testing.T) {
 		startFn: func(port string, baud int) error {
 			return fmt.Errorf("port not found")
 		},
-	}, "echo", []string{"test"}, nil)
+	}, "echo", []string{"test"}, nil, nil)
 
 	require.NoError(t, err)
 	require.NotNil(t, gotKnownPorts)
@@ -424,7 +471,7 @@ func TestFlashOutputLinesLimit(t *testing.T) {
 	}
 
 	opts := &Options{OutputLines: 3}
-	result, err := Flash(mgr, "echo", []string{"-e", "line1\nline2\nline3\nline4\nline5"}, opts)
+	result, err := Flash(mgr, "echo", []string{"-e", "line1\nline2\nline3\nline4\nline5"}, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 
@@ -451,7 +498,7 @@ func TestFlashOutputFilterRegex(t *testing.T) {
 	}
 
 	opts := &Options{OutputFilter: "^error"}
-	result, err := Flash(mgr, "echo", []string{"-e", "error: foo\ninfo: bar\nerror: baz\nwarning: qux"}, opts)
+	result, err := Flash(mgr, "echo", []string{"-e", "error: foo\ninfo: bar\nerror: baz\nwarning: qux"}, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 
@@ -478,7 +525,7 @@ func TestFlashOutputFilterAndLines(t *testing.T) {
 		OutputFilter: "log",
 		OutputLines:  2,
 	}
-	result, err := Flash(mgr, "echo", []string{"-e", "log1\nother\nlog2\ndata\nlog3\nstuff\nlog4"}, opts)
+	result, err := Flash(mgr, "echo", []string{"-e", "log1\nother\nlog2\ndata\nlog3\nstuff\nlog4"}, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 
@@ -504,7 +551,7 @@ func TestFlashOutputFilterInvalidRegex(t *testing.T) {
 	}
 
 	opts := &Options{OutputFilter: "[invalid"}
-	_, err := Flash(mgr, "echo", []string{"test"}, opts)
+	_, err := Flash(mgr, "echo", []string{"test"}, opts, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid output filter regex")
 }
@@ -520,7 +567,7 @@ func TestFlashShellMode(t *testing.T) {
 	}
 
 	opts := &Options{Shell: true}
-	result, err := Flash(mgr, "echo hello && echo world", nil, opts)
+	result, err := Flash(mgr, "echo hello && echo world", nil, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "hello")
@@ -538,7 +585,7 @@ func TestFlashShellModeIgnoresArgs(t *testing.T) {
 	}
 
 	opts := &Options{Shell: true}
-	result, err := Flash(mgr, "echo shell-only", []string{"ignored"}, opts)
+	result, err := Flash(mgr, "echo shell-only", []string{"ignored"}, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "shell-only")
@@ -556,7 +603,7 @@ func TestFlashCwd(t *testing.T) {
 	}
 
 	opts := &Options{Cwd: "/tmp"}
-	result, err := Flash(mgr, "pwd", nil, opts)
+	result, err := Flash(mgr, "pwd", nil, opts, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	// On macOS, /tmp resolves to /private/tmp, so check for either
@@ -588,7 +635,7 @@ func TestPreflightFlashCommandSameArchBinary(t *testing.T) {
 // preflight LookPath failure before attempting to exec anything.
 func TestFlashRejectsMissingCommand(t *testing.T) {
 	mgr := &mockManager{portName: "test-port", baud: 115200, running: true}
-	_, err := Flash(mgr, "definitely-not-a-real-flasher-xyz123", nil, nil)
+	_, err := Flash(mgr, "definitely-not-a-real-flasher-xyz123", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found on PATH")
 }
@@ -841,7 +888,7 @@ func TestFlashRejectsFatalArchMismatchWithoutTouchingPort(t *testing.T) {
 		},
 	}
 
-	_, err := Flash(mgr, "wrong-arch-flasher", nil, nil)
+	_, err := Flash(mgr, "wrong-arch-flasher", nil, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "incompatible with host")
 	assert.False(t, stopCalled, "Stop must not be called when preflight rejects the command")
@@ -860,7 +907,7 @@ func TestFlashProceedsWithRosettaWarning(t *testing.T) {
 
 	mgr := &mockManager{portName: "test-port", baud: 115200, running: true}
 
-	result, err := Flash(mgr, "echo", []string{"flash output"}, nil)
+	result, err := Flash(mgr, "echo", []string{"flash output"}, nil, nil)
 	require.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Contains(t, result.CommandOutput, "Warning: binary is amd64; running under Rosetta 2")

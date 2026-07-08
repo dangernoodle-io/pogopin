@@ -173,6 +173,8 @@ func boundOutput(lines []string, raw bool) string {
 }
 
 func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_list")
+	defer done()
 	unlockHardwareTier()
 
 	ports, err := serial.ListPorts()
@@ -189,6 +191,8 @@ func handleSerialList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_start")
+	defer done()
 	unlockHardwareTier()
 	port, err := req.RequireString("port")
 	if err != nil {
@@ -205,7 +209,7 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 		bufSize = int(v)
 	}
 
-	return startSessionWithAutoReset(req, port, baud, bufSize, "Started")
+	return startSessionWithAutoReset(req, port, baud, bufSize, "Started"), nil
 }
 
 // startSessionWithAutoReset starts (or restarts) buffered monitoring on port
@@ -213,9 +217,9 @@ func handleSerialStart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 // devices that handleSerialStart has always done, returning a status message.
 // verb ("Started"/"Restarted") lets callers share this body with differing
 // wording. Shared by handleSerialStart and handleSerialRestart.
-func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSize int, verb string) (*mcp.CallToolResult, error) {
+func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSize int, verb string) *mcp.CallToolResult {
 	if err := session.StartSession(port, baud, bufSize); err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+		return mcp.NewToolResultError(err.Error())
 	}
 
 	autoReset := true
@@ -229,7 +233,7 @@ func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSi
 		// No progress/emitter context here (this is serial_start's internal
 		// auto-reset, not an esp_* tool call) — no connect-status callback.
 		sess, factory := session.AcquireForFlasher(port, nil)
-		resetErr := esp.ResetESP(factory, port, "")
+		resetErr := esp.ResetESP(factory, port, "", nil)
 		newPort := session.ReleaseFlasherImmediate(sess, port)
 
 		if resetErr == nil {
@@ -241,7 +245,7 @@ func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSi
 		}
 	}
 
-	return mcp.NewToolResultText(msg), nil
+	return mcp.NewToolResultText(msg)
 }
 
 // handleSerialRestart performs an atomic stop+start on a port to re-trigger
@@ -253,6 +257,8 @@ func startSessionWithAutoReset(req mcp.CallToolRequest, port string, baud, bufSi
 // default (request args override). If the port isn't open, this behaves
 // like a plain serial_start (no stop needed).
 func handleSerialRestart(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_restart")
+	defer done()
 	unlockHardwareTier()
 	port, err := req.RequireString("port")
 	if err != nil {
@@ -279,6 +285,8 @@ func handleSerialRestart(ctx context.Context, req mcp.CallToolRequest) (*mcp.Cal
 }
 
 func handleSerialRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_read")
+	defer done()
 	m, _, err := session.ResolveSession(req.GetArguments())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -341,6 +349,8 @@ func handleSerialRead(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 }
 
 func handleSerialStop(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_stop")
+	defer done()
 	// First resolve to get the port name (handles single-port fallback)
 	_, portName, err := session.ResolveSession(req.GetArguments())
 	if err != nil {
@@ -351,6 +361,29 @@ func handleSerialStop(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTo
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Stopped reading from %s", portName)), nil
 }
+
+// flashExternalPhases enumerates every flash.StatusPhase* constant, in the
+// order flash_external's combined sequence emits them: three inside
+// flash.Flash() (stopping port, running command, restarting) plus two the
+// handler emits itself after Flash returns (capturing boot, complete).
+// flashExternalStepsTotal is derived from its length rather than a bare
+// literal, so newSequentialStatusEmitter's step count in handleSerialFlash
+// stays tied to this list instead of drifting independently. Go constants
+// aren't reflectable, so this list is hardcoded (mirroring
+// TestAllStatusPhasesClassified's esp.StatusPhase* enumeration) --
+// TestFlashExternalStepsTotalMatchesPhases asserts it covers every
+// flash.StatusPhase* constant, so adding one without updating this list
+// fails loudly instead of newSequentialStatusEmitter silently under/over-
+// counting.
+var flashExternalPhases = [...]string{
+	flash.StatusPhaseStoppingPort,
+	flash.StatusPhaseRunningCmd,
+	flash.StatusPhaseRestarting,
+	flash.StatusPhaseCapturingBoot,
+	flash.StatusPhaseComplete,
+}
+
+var flashExternalStepsTotal = len(flashExternalPhases)
 
 func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// Resolve port name first
@@ -409,7 +442,16 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	// Acquire session for external command
 	sess := session.AcquireForExternal(originalPort)
 
-	result, err := flash.Flash(sess.GetManager(), command, args, flashOpts)
+	// stopping port -> running command -> restarting (inside flash.Flash) ->
+	// capturing boot -> complete (here, after Flash returns, since boot
+	// capture happens outside flash.Flash's own restart step). Sequential
+	// emitter sized from flashExternalPhases rather than a bare literal --
+	// see that var's doc comment and TestFlashExternalStepsTotalMatchesPhases
+	// for the guard tying it to the real flash.StatusPhase* set.
+	opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := newSequentialStatusEmitter(opEmit, flashExternalStepsTotal)
+
+	result, err := flash.Flash(sess.GetManager(), command, args, flashOpts, status)
 	if err != nil {
 		// Flash() rejected the command (e.g. BR-51 preflight) before doing
 		// anything to port state -- release the session we acquired above so
@@ -421,7 +463,9 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 	// Handle port re-enumeration
 	newPort := session.ReleaseExternal(sess, originalPort)
 
+	status(flash.StatusPhaseCapturingBoot, 0, 0)
 	bootLines := captureBootOutput(sess, bootWait)
+	status(flash.StatusPhaseComplete, 0, 0)
 
 	type flashResponse struct {
 		*flash.Result
@@ -439,6 +483,8 @@ func handleSerialFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 }
 
 func handleSerialWrite(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_write")
+	defer done()
 	m, _, err := session.ResolveSession(req.GetArguments())
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -468,6 +514,8 @@ func handleSerialWrite(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallT
 }
 
 func handleSerialStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "serial_status")
+	defer done()
 	port, _ := req.GetArguments()["port"].(string)
 
 	count := session.PortCount()

@@ -282,7 +282,15 @@ func preflightFlashCommand(command string) (path string, warning string, err err
 // on a real binary on PATH or the actual runtime.GOARCH.
 var preflightFn = preflightFlashCommand
 
-func Flash(mgr PortManager, command string, args []string, opts *Options) (Result, error) {
+// Flash runs an external flash command against the port managed by mgr.
+// status, if non-nil, receives coarse phase ticks around the opaque
+// cmd.Run() call — "stopping port" -> "running command" -> "restarting" —
+// with no byte denominator (mid-command progress needs streamed stdout, a
+// separate follow-up). Callers that also capture post-flash boot output
+// (e.g. handleSerialFlash) emit the remaining "capturing boot" ->
+// "complete" ticks themselves with the same status func, since that step
+// happens after Flash returns.
+func Flash(mgr PortManager, command string, args []string, opts *Options, status StatusFunc) (Result, error) {
 	result := Result{Success: false}
 
 	portName := mgr.PortName()
@@ -306,6 +314,7 @@ func Flash(mgr PortManager, command string, args []string, opts *Options) (Resul
 		preflightWarning = warn
 	}
 
+	emitStatus(status, StatusPhaseStoppingPort)
 	if mgr.IsRunning() {
 		_ = mgr.Stop()
 	}
@@ -349,6 +358,7 @@ func Flash(mgr PortManager, command string, args []string, opts *Options) (Resul
 		cmd.Dir = opts.Cwd
 	}
 
+	emitStatus(status, StatusPhaseRunningCmd)
 	err := cmd.Run()
 	result.CommandOutput = out.String()
 
@@ -377,6 +387,7 @@ func Flash(mgr PortManager, command string, args []string, opts *Options) (Resul
 
 	mgr.ClearBuffer()
 
+	emitStatus(status, StatusPhaseRestarting)
 	currentPort := portName
 	var startErr error
 	for _, delay := range retryDelays {

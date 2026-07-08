@@ -57,6 +57,8 @@ The plugin also ships a **`board-medic`** subagent (read-mostly hardware diagnos
 
 Tools register in two tiers. The **core tier** (7× `serial_*` + `decode_backtrace`) registers at startup. The **hardware tier** (10× `esp_*` + `flash_external`) registers lazily on the first `serial_list` or `serial_start` call via `notifications/tools/list_changed`. Sessions that only decode crash logs never pay for the ESP tool surface.
 
+Every tool emits `notifications/progress` (start + completion ticks at minimum; multi-phase ops like `esp_read_nvs`/`esp_read_flash`/`esp_reset`/`flash_external` add coarse in-between phase markers) via a transport-neutral `esp.StatusFunc`/`newSequentialStatusEmitter` — no tool is silent for the duration of a call.
+
 ## Dependencies
 
 - `github.com/spf13/cobra` — CLI framework

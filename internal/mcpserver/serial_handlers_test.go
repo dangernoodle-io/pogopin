@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/flash"
 	"dangernoodle.io/pogopin/internal/serial"
 	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -710,6 +711,29 @@ func TestHandleSerialFlashSuccess(t *testing.T) {
 			_ = m.Stop()
 		}
 	}
+}
+
+// TestFlashExternalStepsTotalMatchesPhases guards the coupling the review
+// flagged: flashExternalStepsTotal (fed to newSequentialStatusEmitter in
+// handleSerialFlash) must cover every flash.StatusPhase* constant, or a tick
+// added/removed from flash.Flash()'s body or the handler's own two ticks
+// would silently under/over-count instead of failing a test. Enumerates the
+// full phase set explicitly (not by reflection, since Go constants aren't
+// reflectable) so a forgotten update to flashExternalPhases is exactly the
+// failure this test catches.
+func TestFlashExternalStepsTotalMatchesPhases(t *testing.T) {
+	allFlashPhases := []string{
+		flash.StatusPhaseStoppingPort,
+		flash.StatusPhaseRunningCmd,
+		flash.StatusPhaseRestarting,
+		flash.StatusPhaseCapturingBoot,
+		flash.StatusPhaseComplete,
+	}
+
+	assert.Equal(t, allFlashPhases, flashExternalPhases[:],
+		"flashExternalPhases must list every flash.StatusPhase* constant in emission order")
+	assert.Equal(t, len(allFlashPhases), flashExternalStepsTotal,
+		"flashExternalStepsTotal must match the full flash.StatusPhase* set")
 }
 
 func TestHandleSerialStartReusesExistingManager(t *testing.T) {

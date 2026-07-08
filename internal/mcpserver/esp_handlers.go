@@ -188,6 +188,8 @@ func handleErase(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 }
 
 func handleESPInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "esp_info")
+	defer done()
 	port, err := req.RequireString("port")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -260,6 +262,8 @@ func handleESPInfo(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 }
 
 func handleRegister(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "esp_register")
+	defer done()
 	port, err := req.RequireString("port")
 	if err != nil {
 		return mcp.NewToolResultError(err.Error()), nil
@@ -347,7 +351,16 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	err = esp.ResetESP(factory, port, resetMode)
+	// resetting -> capturing boot -> complete, on a shared 3-step sequential
+	// emitter (separate instance from connectEmit above — see
+	// connectStatusEmitter's doc comment). ResetESP itself only emits
+	// "resetting"; the handler reuses the same status func directly for the
+	// remaining two ticks since boot-output capture happens here, not inside
+	// esp.ResetESP.
+	opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := newSequentialStatusEmitter(opEmit, 3)
+
+	err = esp.ResetESP(factory, port, resetMode, status)
 	if err != nil {
 		session.ReleaseFlasherImmediate(sess, port)
 		if syncResult := handleSyncError(err); syncResult != nil {
@@ -359,7 +372,9 @@ func handleReset(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRes
 	// Detect port re-enumeration and restart managed port
 	newPort := session.ReleaseFlasherImmediate(sess, port)
 
+	status(esp.StatusPhaseCapturingBoot, 0, 0)
 	bootLines := captureBootOutput(sess, bootWait)
+	status(esp.StatusPhaseComplete, 0, 0)
 
 	type resetResponse struct {
 		Status     string   `json:"status"`
@@ -416,8 +431,14 @@ func handleESPReadFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	if md5 {
-		// MD5 mode
-		result, err := esp.GetFlashMD5(factory, port, offset, size, baudRate, resetMode)
+		// MD5 mode. Coarse computing-hash -> complete markers (separate
+		// emitter instance from connectEmit above — see
+		// connectStatusEmitter's doc comment). f.GetFlashMD5 has no
+		// byte-progress hook yet (a later phase adds one upstream), so this
+		// is a 2-step sequential signal, not a bar.
+		opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+		status := newSequentialStatusEmitter(opEmit, 2)
+		result, err := esp.GetFlashMD5(factory, port, offset, size, baudRate, resetMode, status)
 		if err != nil {
 			if syncResult := handleSyncError(err); syncResult != nil {
 				return syncResult, nil
@@ -475,7 +496,15 @@ func handleReadNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	namespace, _ := req.GetArguments()["namespace"].(string)
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	entries, err := esp.ReadNVS(factory, port, offset, size, baudRate, namespace, resetMode, nil)
+	// ReadNVS only ever emits StatusPhaseReadingPartition (bytes) then
+	// StatusPhaseParsing — both already classified by nvsBytePhases/
+	// nvsPhaseOrdinal, so this reuses the same adapter as the NVS
+	// read-modify-write handlers rather than forking a new one.
+	byteEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	phaseEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	entries, err := esp.ReadNVS(factory, port, offset, size, baudRate, namespace, resetMode, status)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -516,6 +545,22 @@ var nvsPhaseOrdinal = map[string]int{
 }
 
 const nvsPhaseTotal = 3
+
+// sequentialOnlyPhases documents the esp.StatusPhase* constants wired
+// through newSequentialStatusEmitter's call-order sequencing (handleReset,
+// handleESPReadFlash's md5 branch) rather than nvsStatusEmitter's byte/
+// ordinal maps. It's never consulted on the hot path — newSequentialStatusEmitter
+// accepts any phase generically, that's the point of not proliferating a
+// per-tool map — it exists purely so TestAllStatusPhasesClassified can
+// assert every esp.StatusPhase* constant is accounted for by exactly one
+// adapter, extending Phase 1's TestNVSPhaseClassificationCovered guard so a
+// new phase constant can't be added to esp.go without anyone wiring it.
+var sequentialOnlyPhases = map[string]struct{}{
+	esp.StatusPhaseComputingHash: {},
+	esp.StatusPhaseResetting:     {},
+	esp.StatusPhaseCapturingBoot: {},
+	esp.StatusPhaseComplete:      {},
+}
 
 // nvsStatusEmitter adapts an esp.StatusFunc onto two independent progress
 // emitters: byteEmit drives the numeric bar with real bytes during the
