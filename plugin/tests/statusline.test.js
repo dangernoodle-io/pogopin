@@ -135,6 +135,94 @@ test('stale session file is pruned even with live pid', () => {
   });
 });
 
+test('mode=always (default): "serial: idle" when no ports', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, []);
+    const result = run(tmpDir);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'serial: idle');
+  });
+});
+
+test('mode=always (default): renders when ports present', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, [
+      { port: '/dev/ttyUSB0', baud: 115200, mode: 'monitor', buffer_lines: 100, pid: process.pid },
+    ]);
+    const result = run(tmpDir);
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'serial: ttyUSB0@115200 monitor 100L');
+  });
+});
+
+test('mode=ports-only: silent (no output) when no ports', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, []);
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'ports-only' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('mode=ports-only: renders when ports present', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, [
+      { port: '/dev/ttyUSB0', baud: 115200, mode: 'monitor', buffer_lines: 100, pid: process.pid },
+    ]);
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'ports-only' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'serial: ttyUSB0@115200 monitor 100L');
+  });
+});
+
+test('mode=fresh-only: renders a fresh (<30s) port', () => {
+  withTmpDir(tmpDir => {
+    const freshTs = Math.floor(Date.now() / 1000) - 5;
+    writeStatusFile(
+      tmpDir,
+      process.pid,
+      [{ port: '/dev/ttyUSB0', baud: 115200, mode: 'monitor', buffer_lines: 100, pid: process.pid }],
+      freshTs
+    );
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'fresh-only' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'serial: ttyUSB0@115200 monitor 100L');
+  });
+});
+
+test('mode=fresh-only: silent when the only port is 30-45s old (live pid, beyond fresh threshold)', () => {
+  withTmpDir(tmpDir => {
+    const agingTs = Math.floor(Date.now() / 1000) - 35;
+    writeStatusFile(
+      tmpDir,
+      process.pid,
+      [{ port: '/dev/ttyUSB0', baud: 115200, mode: 'monitor', buffer_lines: 100, pid: process.pid }],
+      agingTs
+    );
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'fresh-only' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('mode=fresh-only: silent when no ports at all', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, []);
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'fresh-only' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('unknown mode value falls back to "always" behavior', () => {
+  withTmpDir(tmpDir => {
+    writeStatusFile(tmpDir, process.pid, []);
+    const result = run(tmpDir, { POGOPIN_STATUSLINE_MODE: 'bogus' });
+    assert.equal(result.status, 0);
+    assert.equal(result.stdout.trim(), 'serial: idle');
+  });
+});
+
 test('CLAUDE_CODE_SESSION_ID set filters to own-session ports only', () => {
   withTmpDir(tmpDir => {
     writeStatusFile(tmpDir, process.pid, [

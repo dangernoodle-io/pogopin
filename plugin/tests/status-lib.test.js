@@ -93,6 +93,31 @@ test('readLivePorts: skips unparseable file, keeps live ones', () => {
   });
 });
 
+test('readLivePorts: each returned port carries source file updated_at', () => {
+  withTmpDir(tmpDir => {
+    const ts = Math.floor(Date.now() / 1000) - 10;
+    writeStatusFile(tmpDir, process.pid, [{ port: '/dev/ttyUSB0', pid: process.pid }], ts);
+    withStatusDir(tmpDir, lib => {
+      const ports = lib.readLivePorts();
+      assert.equal(ports.length, 1);
+      assert.equal(ports[0].updated_at, ts);
+    });
+  });
+});
+
+test('readLivePorts: opts.maxAgeSeconds narrows the staleness window (additive, default unchanged)', () => {
+  withTmpDir(tmpDir => {
+    const agingTs = Math.floor(Date.now() / 1000) - 35;
+    writeStatusFile(tmpDir, process.pid, [{ port: '/dev/ttyUSB0', pid: process.pid }], agingTs);
+    withStatusDir(tmpDir, lib => {
+      // Default call (no opts): still within STALE_SECONDS (45s) -> present.
+      assert.equal(lib.readLivePorts().length, 1);
+      // Tighter opt: 35s old port exceeds a 30s maxAgeSeconds -> dropped.
+      assert.deepEqual(lib.readLivePorts({ maxAgeSeconds: 30 }), []);
+    });
+  });
+});
+
 test('pidAlive: own pid true, 0/negative/dead false', () => {
   withTmpDir(tmpDir => {
     withStatusDir(tmpDir, lib => {
