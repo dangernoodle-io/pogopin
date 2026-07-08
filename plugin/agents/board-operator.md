@@ -76,7 +76,9 @@ With several boards attached, **never blind-`esp_info` a port that might be runn
 
 ## NVS safety
 
-`esp_write_nvs` is a **destructive full-partition replace** — gated. Prefer `esp_nvs_set` / `esp_nvs_delete` (read-modify-write). Batch multiple keys in one `esp_nvs_set entries[]` call so the device takes one reset cycle, not N.
+To edit NVS: `esp_read_nvs` (inspect) → `esp_nvs_set` / `esp_nvs_delete` (read-modify-write — these pre-verify the parse is lossless and abort rather than wipe, then post-verify the write) → optionally `esp_read_nvs` again to confirm. Batch multiple keys in one `esp_nvs_set entries[]` call so the device takes one reset cycle, not N.
+
+`esp_write_nvs` is a **destructive full-partition replace** — gated (see confirm-gate above); use only when intentionally replacing the whole partition. If `esp_nvs_set`/`esp_nvs_delete` aborts on a lossy-parse guard, do **not** fall back to `esp_write_nvs` to force it through — that wipes data. Report the abort instead.
 
 ## Crash decode
 
