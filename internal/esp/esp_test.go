@@ -806,7 +806,7 @@ func TestReadNVSSuccess(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", "")
+	result, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", "", nil)
 	require.NoError(t, err)
 	assert.Len(t, result, 3)
 	// Verify entries are present (order may vary)
@@ -839,7 +839,7 @@ func TestReadNVSNamespaceFilter(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "test", "")
+	result, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "test", "", nil)
 	require.NoError(t, err)
 	assert.Len(t, result, 2)
 	for _, e := range result {
@@ -855,7 +855,7 @@ func TestReadNVSReadError(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", "")
+	_, err := ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read flash")
 }
@@ -875,7 +875,7 @@ func TestNVSSetNewKey(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key2", "string", "world", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key2", "string", "world", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
 
@@ -899,7 +899,7 @@ func TestNVSSetUpdateKey(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key1", "u32", uint32(100), 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key1", "u32", uint32(100), 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
 
@@ -922,7 +922,7 @@ func TestNVSDeleteKey(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
 
@@ -946,7 +946,7 @@ func TestNVSDeleteNamespace(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Applied)
 
@@ -962,7 +962,7 @@ func TestNVSDeleteReadError(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	_, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read NVS")
 }
@@ -988,7 +988,7 @@ func TestNVSSetBatch(t *testing.T) {
 		{Namespace: "test", Key: "new_key", Type: "string", Value: "hello"},
 	}
 
-	result, err := NVSSetBatch(factory, "test-port", updates, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	result, err := NVSSetBatch(factory, "test-port", updates, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 2, result.Applied)
 
@@ -1012,6 +1012,148 @@ func TestNVSSetBatch(t *testing.T) {
 	assert.Equal(t, "hello", writtenMap["new_key"].Value)
 }
 
+// TestNVSSetBatchStatusPhaseSequence confirms the StatusFunc callback fires
+// in the exact orchestration-step order NVSSetBatch documents: reading
+// partition -> parsing -> verifying completeness -> writing -> reading
+// back -> verifying. The mockFlasher never invokes the byte-progress
+// callbacks it's handed, so every tick observed here is the discrete
+// phase-transition tick emitted directly by NVSSetBatch itself.
+func TestNVSSetBatchStatusPhaseSequence(t *testing.T) {
+	existingData, err := nvs.GenerateNVS(nil, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{readFlashVal: existingData}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var phases []string
+	status := func(phase string, current, total int) {
+		phases = append(phases, phase)
+	}
+
+	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
+		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", status)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		StatusPhaseReadingPartition,
+		StatusPhaseParsing,
+		StatusPhaseVerifyingCompleteness,
+		StatusPhaseWriting,
+		StatusPhaseReadingBack,
+		StatusPhaseVerifying,
+	}, phases)
+}
+
+// TestNVSDeleteStatusPhaseSequence mirrors the above for NVSDelete.
+func TestNVSDeleteStatusPhaseSequence(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+	}
+	existingData, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{readFlashVal: existingData}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var phases []string
+	status := func(phase string, current, total int) {
+		phases = append(phases, phase)
+	}
+
+	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "k1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", status)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{
+		StatusPhaseReadingPartition,
+		StatusPhaseParsing,
+		StatusPhaseVerifyingCompleteness,
+		StatusPhaseWriting,
+		StatusPhaseReadingBack,
+		StatusPhaseVerifying,
+	}, phases)
+}
+
+// TestWriteNVSStatusWritingPhase confirms WriteNVS's simpler (non-RMW) path
+// emits only the StatusPhaseWriting phase via its StatusFunc.
+func TestWriteNVSStatusWritingPhase(t *testing.T) {
+	mock := &mockFlasher{}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var phases []string
+	status := func(phase string, current, total int) {
+		phases = append(phases, phase)
+	}
+
+	err := WriteNVS(factory, "test-port", []nvs.Entry{
+		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", status)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{StatusPhaseWriting}, phases)
+}
+
+// TestReadNVSStatusPhaseSequence confirms ReadNVS emits StatusPhaseReadingPartition
+// then StatusPhaseParsing via its StatusFunc.
+func TestReadNVSStatusPhaseSequence(t *testing.T) {
+	data, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{readFlashVal: data}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var phases []string
+	status := func(phase string, current, total int) {
+		phases = append(phases, phase)
+	}
+
+	_, err = ReadNVS(factory, "/dev/ttyUSB0", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", "", status)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{StatusPhaseReadingPartition, StatusPhaseParsing}, phases)
+}
+
+// TestStatusProgressNilStatusReturnsNil confirms statusProgress's nil-safety:
+// a nil StatusFunc must yield a nil progress callback (so callers pass it
+// straight through nil-safe progress parameters unchanged), not a non-nil
+// no-op wrapper.
+func TestStatusProgressNilStatusReturnsNil(t *testing.T) {
+	assert.Nil(t, statusProgress(nil, StatusPhaseWriting))
+}
+
+// TestStatusProgressForwardsBytes confirms statusProgress forwards
+// current/total under the fixed phase label unchanged.
+func TestStatusProgressForwardsBytes(t *testing.T) {
+	type tick struct {
+		phase          string
+		current, total int
+	}
+	var ticks []tick
+	status := func(phase string, current, total int) {
+		ticks = append(ticks, tick{phase, current, total})
+	}
+
+	progress := statusProgress(status, StatusPhaseWriting)
+	require.NotNil(t, progress)
+	progress(5, 10)
+	progress(10, 10)
+
+	assert.Equal(t, []tick{
+		{StatusPhaseWriting, 5, 10},
+		{StatusPhaseWriting, 10, 10},
+	}, ticks)
+}
+
 func TestNVSSetBatchReadError(t *testing.T) {
 	mock := &mockFlasher{
 		readFlashErr: fmt.Errorf("read failed"),
@@ -1023,7 +1165,7 @@ func TestNVSSetBatchReadError(t *testing.T) {
 
 	_, err := NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
-	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read NVS")
 }
@@ -1043,7 +1185,7 @@ func TestNVSSetBatchFlashError(t *testing.T) {
 
 	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
-	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write NVS")
 }
@@ -1060,7 +1202,7 @@ func TestNVSSetUsesNVSSetBatch(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := NVSSet(factory, "test-port", "ns", "key", "u32", uint32(999), 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	result, err := NVSSet(factory, "test-port", "ns", "key", "u32", uint32(999), 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, result.Applied)
 
@@ -1138,7 +1280,7 @@ func TestNVSSetBatchAbortsOnLossyParse(t *testing.T) {
 
 	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k2", Type: "u8", Value: uint8(1)},
-	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "lossy")
 	assert.False(t, mock.flashImagesCalled, "must not flash when the pre-write parse is lossy")
@@ -1158,7 +1300,7 @@ func TestNVSDeleteAbortsOnLossyParse(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "k1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "k1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "lossy")
 	assert.False(t, mock.flashImagesCalled, "must not flash when the pre-write parse is lossy")
@@ -1188,7 +1330,7 @@ func TestNVSSetBatchAbortsOnPostWriteVerifyFailure(t *testing.T) {
 
 	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "new_key", Type: "string", Value: "hello"},
-	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "post-write verify")
 	assert.Contains(t, err.Error(), "existing")
@@ -1215,7 +1357,7 @@ func TestNVSSetBatchVerifiesRequestedValueLanded(t *testing.T) {
 
 	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
-	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "post-write verify")
 	assert.Contains(t, err.Error(), "value mismatch")
@@ -1242,7 +1384,7 @@ func TestNVSDeleteAbortsOnPostWriteVerifyFailure(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "post-write verify")
 	assert.Contains(t, err.Error(), "key2")
