@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -15,9 +16,9 @@ import (
 
 func TestRunHeartbeat_WritesStatusFileAndStopsOnCancel(t *testing.T) {
 	tmp := t.TempDir()
-	path := filepath.Join(tmp, "status.json")
-	prev := status.SetStatusFilePath(path)
-	defer status.SetStatusFilePath(prev)
+	path := filepath.Join(tmp, strconv.Itoa(os.Getpid())+".json")
+	prev := status.SetStatusDir(tmp)
+	defer status.SetStatusDir(prev)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

@@ -33,6 +33,8 @@ func Serve() error {
 	registerTools(s)
 	go runHeartbeat(ctx, 15*time.Second)
 
+	defer status.Remove()
+
 	return server.ServeStdio(s)
 }
 
@@ -45,6 +47,7 @@ func runHeartbeat(ctx context.Context, interval time.Duration) {
 			return
 		case <-t.C:
 			status.Write(session.AllPortStates())
+			status.SweepStale()
 		}
 	}
 }

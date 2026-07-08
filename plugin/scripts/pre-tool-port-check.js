@@ -4,69 +4,29 @@
 // already holds/is running. Silent on the normal same-session flow, and fails
 // open (no warning) when session identity is unavailable (older server,
 // CLAUDE_CODE_SESSION_ID unset) or the recorded owner process is dead.
+//
+// Reads the merged live-ports view from status-lib.js, which globs the
+// per-session status/<pid>.json directory and prunes dead-PID and stale
+// (>45s) entries — so a portless session's own file can never clobber a
+// concurrent session's port entry (the failure mode this hook used to be
+// vulnerable to when all servers shared one status.json).
 
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const { defaultCacheDir, pidAlive, readLivePorts } = require('./status-lib.js');
 
 const PORT_TOOL_PREFIX = 'mcp__plugin_pogopin-mcp_pogopin__';
-const STALE_MS = 30 * 1000;
-
-// Mirror Go's os.UserCacheDir per-platform so this finds files written by pogopin.
-function defaultCacheDir() {
-  if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Caches');
-  if (process.platform === 'win32') return process.env.LocalAppData || path.join(os.homedir(), 'AppData', 'Local');
-  return process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
-}
-
-function statusPath() {
-  return process.env.POGOPIN_STATUS_PATH || path.join(defaultCacheDir(), 'pogopin', 'status.json');
-}
 
 // isPortTool returns true if tool_name is one of the pogopin port-using tools.
 function isPortTool(toolName) {
   return typeof toolName === 'string' && toolName.startsWith(PORT_TOOL_PREFIX);
 }
 
-// readStatus returns a parsed, non-stale StatusFile, or null if missing/unreadable/
-// malformed/stale. Never throws.
-function readStatus(filePath, nowMs) {
-  let raw;
-  let stat;
-  try {
-    raw = fs.readFileSync(filePath, 'utf8');
-    stat = fs.statSync(filePath);
-  } catch (err) {
-    return null;
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return null;
-  }
-
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.ports)) return null;
-
-  const updatedAtMs = typeof parsed.updated_at === 'number' ? parsed.updated_at * 1000 : stat.mtimeMs;
-  if (typeof updatedAtMs !== 'number' || nowMs - updatedAtMs > STALE_MS) return null;
-
-  return parsed;
-}
-
-// pidAlive returns true if pid names a live process (or one we can't signal
-// due to permissions, which still means it's alive). Returns false for
-// missing/non-integer pids and confirmed-dead (ESRCH) pids. Never throws.
-function pidAlive(pid) {
-  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    if (err && err.code === 'EPERM') return true;
-    return false;
-  }
+// readStatus returns the merged live ports as a { ports } shape (matching
+// the previous single-file StatusFile interface), or null if there are no
+// live ports. Never throws (readLivePorts is fail-open).
+function readStatus() {
+  const ports = readLivePorts();
+  if (!Array.isArray(ports) || ports.length === 0) return null;
+  return { ports };
 }
 
 // findConflict returns the busy PortState entry for `port` iff it represents
@@ -118,7 +78,7 @@ function main(input) {
   const port = parsed.tool_input && parsed.tool_input.port;
   if (!port || typeof port !== 'string') return null;
 
-  const status = readStatus(statusPath(), Date.now());
+  const status = readStatus();
   if (!status) return null;
 
   const conflict = findConflict(status, port, parsed.session_id);
@@ -145,4 +105,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { isPortTool, readStatus, findConflict, buildWarning, pidAlive, main, PORT_TOOL_PREFIX, STALE_MS };
+module.exports = { isPortTool, readStatus, findConflict, buildWarning, pidAlive, main, PORT_TOOL_PREFIX, defaultCacheDir };

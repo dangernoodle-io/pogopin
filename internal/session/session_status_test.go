@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"dangernoodle.io/pogopin/internal/serial"
@@ -13,13 +14,13 @@ import (
 	goSerial "go.bug.st/serial"
 )
 
-// Helper to setup status file path for testing.
+// Helper to setup status dir for testing; returns this process's own
+// status file path within it (<dir>/<pid>.json).
 func setupStatusFile(t *testing.T) string {
 	tmp := t.TempDir()
-	statusPath := filepath.Join(tmp, "status.json")
-	prev := status.SetStatusFilePath(statusPath)
-	t.Cleanup(func() { status.SetStatusFilePath(prev) })
-	return statusPath
+	prev := status.SetStatusDir(tmp)
+	t.Cleanup(func() { status.SetStatusDir(prev) })
+	return filepath.Join(tmp, strconv.Itoa(os.Getpid())+".json")
 }
 
 // Helper to read and parse status file.
