@@ -16,18 +16,17 @@ function deadPid() {
   return res.pid;
 }
 
-function run(input, statusPath) {
+function run(input, statusDir) {
   const env = { ...process.env };
-  if (statusPath !== undefined) env.POGOPIN_STATUS_PATH = statusPath;
-  else delete env.POGOPIN_STATUS_PATH;
+  if (statusDir !== undefined) env.POGOPIN_STATUS_DIR = statusDir;
+  else delete env.POGOPIN_STATUS_DIR;
   return spawnSync('node', [scriptPath], { input: JSON.stringify(input), env, encoding: 'utf8' });
 }
 
-function withTmpStatus(fn) {
+function withTmpStatusDir(fn) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pogopin-hook-'));
-  const statusPath = path.join(tmpDir, 'status.json');
   try {
-    fn(statusPath);
+    fn(tmpDir);
   } finally {
     try {
       fs.rmSync(tmpDir, { recursive: true });
@@ -37,54 +36,62 @@ function withTmpStatus(fn) {
   }
 }
 
-function writeStatus(statusPath, ports, updatedAt = Math.floor(Date.now() / 1000)) {
-  fs.writeFileSync(statusPath, JSON.stringify({ ports, updated_at: updatedAt }));
+// writeStatus writes a single per-session status file <dir>/<pid>.json,
+// mirroring what a live pogo server process would write for itself.
+function writeStatus(statusDir, pid, ports, updatedAt = Math.floor(Date.now() / 1000)) {
+  fs.writeFileSync(path.join(statusDir, `${pid}.json`), JSON.stringify({ ports, updated_at: updatedAt }));
 }
 
 test('no port arg in tool_input -> no warning, exit 0', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true }]);
-    const result = run({ tool_name: TOOL, tool_input: {} }, statusPath);
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }]);
+    const result = run({ tool_name: TOOL, tool_input: {} }, statusDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
-test('missing status.json -> no warning, exit 0', () => {
-  withTmpStatus(statusPath => {
-    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusPath);
+test('missing status dir -> no warning, exit 0', () => {
+  withTmpStatusDir(statusDir => {
+    const missingDir = path.join(statusDir, 'nonexistent');
+    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, missingDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
-test('stale status.json -> no warning, exit 0', () => {
-  withTmpStatus(statusPath => {
+test('stale session file -> no warning, exit 0', () => {
+  withTmpStatusDir(statusDir => {
     const staleTs = Math.floor(Date.now() / 1000) - 120;
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true }], staleTs);
-    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusPath);
+    writeStatus(
+      statusDir,
+      process.pid,
+      [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }],
+      staleTs
+    );
+    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
 test('port free/not conflicting -> no warning', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: false }]);
-    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusPath);
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [{ port: '/dev/ttyUSB0', mode: 'reader', running: false, pid: process.pid }]);
+    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
 test('cross-session port busy/held with live owner pid -> warning emitted via additionalContext/systemMessage, no deny/ask', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [
       { port: '/dev/ttyUSB0', mode: 'reader', running: true, session_id: 'sess-owner', pid: process.pid },
     ]);
     const result = run(
       { session_id: 'sess-caller', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } },
-      statusPath
+      statusDir
     );
     assert.equal(result.status, 0);
     const out = JSON.parse(result.stdout.trim());
@@ -99,13 +106,13 @@ test('cross-session port busy/held with live owner pid -> warning emitted via ad
 });
 
 test('same-session port busy/held -> silent (normal same-session flow)', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [
       { port: '/dev/ttyUSB0', mode: 'reader', running: true, session_id: 'sess-same', pid: process.pid },
     ]);
     const result = run(
       { session_id: 'sess-same', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } },
-      statusPath
+      statusDir
     );
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
@@ -113,14 +120,14 @@ test('same-session port busy/held -> silent (normal same-session flow)', () => {
 });
 
 test('cross-session port busy/held but owner pid is dead -> silent (stale entry)', () => {
-  withTmpStatus(statusPath => {
+  withTmpStatusDir(statusDir => {
     const stalePid = deadPid();
-    writeStatus(statusPath, [
+    writeStatus(statusDir, stalePid, [
       { port: '/dev/ttyUSB0', mode: 'reader', running: true, session_id: 'sess-owner', pid: stalePid },
     ]);
     const result = run(
       { session_id: 'sess-caller', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } },
-      statusPath
+      statusDir
     );
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
@@ -128,11 +135,11 @@ test('cross-session port busy/held but owner pid is dead -> silent (stale entry)
 });
 
 test('entry without session_id (older server / env unset) -> silent (graceful degrade)', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }]);
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }]);
     const result = run(
       { session_id: 'sess-caller', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } },
-      statusPath
+      statusDir
     );
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
@@ -140,23 +147,23 @@ test('entry without session_id (older server / env unset) -> silent (graceful de
 });
 
 test('entry session_id and caller session_id both empty string -> silent (absent-guard precedes equality check)', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [
       { port: '/dev/ttyUSB0', mode: 'reader', running: true, session_id: '', pid: process.pid },
     ]);
     const result = run(
       { session_id: '', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } },
-      statusPath
+      statusDir
     );
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
-test('malformed status.json -> fail-open: no warning, exit 0, no crash', () => {
-  withTmpStatus(statusPath => {
-    fs.writeFileSync(statusPath, 'not-json{{{');
-    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusPath);
+test('malformed session file -> fail-open: skipped, no crash', () => {
+  withTmpStatusDir(statusDir => {
+    fs.writeFileSync(path.join(statusDir, `${process.pid}.json`), 'not-json{{{');
+    const result = run({ tool_name: TOOL, tool_input: { port: '/dev/ttyUSB0' } }, statusDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
     assert.equal(result.stderr.trim(), '');
@@ -164,20 +171,38 @@ test('malformed status.json -> fail-open: no warning, exit 0, no crash', () => {
 });
 
 test('non-pogopin tool_name -> no warning', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true }]);
-    const result = run({ tool_name: 'Bash', tool_input: { port: '/dev/ttyUSB0' } }, statusPath);
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }]);
+    const result = run({ tool_name: 'Bash', tool_input: { port: '/dev/ttyUSB0' } }, statusDir);
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
   });
 });
 
 test('malformed stdin JSON -> fail-open: no warning, exit 0', () => {
-  withTmpStatus(statusPath => {
-    writeStatus(statusPath, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true }]);
-    const env = { ...process.env, POGOPIN_STATUS_PATH: statusPath };
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [{ port: '/dev/ttyUSB0', mode: 'reader', running: true, pid: process.pid }]);
+    const env = { ...process.env, POGOPIN_STATUS_DIR: statusDir };
     const result = spawnSync('node', [scriptPath], { input: 'not-json', env, encoding: 'utf8' });
     assert.equal(result.status, 0);
     assert.equal(result.stdout.trim(), '');
+  });
+});
+
+test('two-session merge: cross-session conflict on one port, own port on another -> warning only for the conflicting port', () => {
+  withTmpStatusDir(statusDir => {
+    writeStatus(statusDir, process.pid, [
+      { port: '/dev/ttyUSB0', mode: 'reader', running: true, session_id: 'sess-caller', pid: process.pid },
+    ]);
+    writeStatus(statusDir, process.pid + 1, [
+      { port: '/dev/ttyUSB1', mode: 'reader', running: true, session_id: 'sess-owner', pid: process.pid },
+    ]);
+    const result = run(
+      { session_id: 'sess-caller', tool_name: TOOL, tool_input: { port: '/dev/ttyUSB1' } },
+      statusDir
+    );
+    assert.equal(result.status, 0);
+    const out = JSON.parse(result.stdout.trim());
+    assert.ok(out.hookSpecificOutput.additionalContext.includes('/dev/ttyUSB1'));
   });
 });
