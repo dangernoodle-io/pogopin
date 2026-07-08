@@ -93,6 +93,13 @@ type mockFlasher struct {
 	flashMD5Val         string
 	readFlashErr        error
 	readFlashVal        []byte
+	flashImagesData     []espflasher.ImagePart
+
+	// readFlashPostWriteOverride, if non-nil, is returned by ReadFlash for
+	// every call after FlashImages has been called, instead of the
+	// just-flashed data. Lets tests simulate a device whose post-write state
+	// doesn't match what was written (verify-failure paths for NVS RMW).
+	readFlashPostWriteOverride []byte
 
 	// flashImagesProgress, eraseFlashProgress, and readFlashProgress, when
 	// set, are invoked with the real progress.ProgressFunc handed down by
@@ -106,6 +113,7 @@ type mockFlasher struct {
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
 	m.flashImagesCalled = true
+	m.flashImagesData = images
 	if m.flashImagesProgress != nil {
 		m.flashImagesProgress(progress)
 	}
@@ -173,6 +181,22 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
 	if m.readFlashProgress != nil {
 		m.readFlashProgress(progress)
+	}
+	if m.readFlashErr != nil {
+		return nil, m.readFlashErr
+	}
+	if m.flashImagesCalled {
+		if m.readFlashPostWriteOverride != nil {
+			return m.readFlashPostWriteOverride, nil
+		}
+		// Simulate a real device: serve back the bytes that were actually
+		// flashed to this offset, so post-write verification observes the
+		// genuine round trip instead of stale pre-write data.
+		for _, img := range m.flashImagesData {
+			if img.Offset == offset && uint32(len(img.Data)) >= size {
+				return img.Data[:size], nil
+			}
+		}
 	}
 	return m.readFlashVal, m.readFlashErr
 }

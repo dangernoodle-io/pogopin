@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
+	"tinygo.org/x/espflasher/pkg/nvs"
 )
 
 func TestHandleFlashSuccess(t *testing.T) {
@@ -1160,4 +1161,270 @@ func TestHandleSyncError(t *testing.T) {
 	// Test with nil.
 	result = handleSyncError(nil)
 	assert.Nil(t, result)
+}
+
+// NVS RMW handler tests (BR-53): handleNVSSet / handleNVSDelete are
+// read-modify-write and must never report success without a verified
+// post-write re-read. These cover the success path plus the two abort
+// paths (pre-write lossy-parse guard, post-write verify failure).
+
+func TestHandleNVSSetSuccess(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	existingData, err := nvs.GenerateNVS(nil, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mockF := &mockFlasher{readFlashVal: existingData}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "/dev/ttyUSB0",
+		"entries": []interface{}{
+			map[string]interface{}{
+				"namespace": "test",
+				"key":       "k",
+				"type":      "u8",
+				"value":     "42",
+			},
+		},
+	}
+
+	result, err := handleNVSSet(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(tc.Text), &resp))
+	assert.Equal(t, "success", resp["status"])
+	assert.Equal(t, float64(1), resp["updated"])
+	assert.True(t, mockF.flashImagesCalled)
+}
+
+func TestHandleNVSSetAbortsOnLossyParse(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Flip an otherwise-empty slot's bitmap state to Written without a real
+	// entry there, so nvs.ParseNVS silently drops it as orphaned — the
+	// pre-write completeness guard must catch this and refuse to write.
+	tampered := append([]byte(nil), data...)
+	page := tampered[0:nvs.PageSize]
+	const slot = 100
+	bitIndex := uint(slot) * 2
+	byteIdx := nvs.HeaderSize + int(bitIndex/8)
+	bitOffset := bitIndex % 8
+	page[byteIdx] &^= 1 << bitOffset
+
+	mockF := &mockFlasher{readFlashVal: tampered}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "/dev/ttyUSB0",
+		"entries": []interface{}{
+			map[string]interface{}{
+				"namespace": "test",
+				"key":       "k2",
+				"type":      "u8",
+				"value":     "1",
+			},
+		},
+	}
+
+	result, err := handleNVSSet(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "lossy")
+	assert.False(t, mockF.flashImagesCalled, "must not flash when the pre-write parse is lossy")
+}
+
+func TestHandleNVSSetAbortsOnPostWriteVerifyFailure(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	existingData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "existing", Type: "u8", Value: uint8(1)},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Device comes back after the write missing the pre-existing key.
+	postWriteData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "new_key", Type: "u8", Value: uint8(1)},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mockF := &mockFlasher{
+		readFlashVal:               existingData,
+		readFlashPostWriteOverride: postWriteData,
+	}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port": "/dev/ttyUSB0",
+		"entries": []interface{}{
+			map[string]interface{}{
+				"namespace": "test",
+				"key":       "new_key",
+				"type":      "u8",
+				"value":     "1",
+			},
+		},
+	}
+
+	result, err := handleNVSSet(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "post-write verify")
+	assert.Contains(t, tc.Text, "existing")
+	assert.True(t, mockF.flashImagesCalled)
+}
+
+func TestHandleNVSDeleteSuccess(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	existingData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "key1", Type: "u32", Value: uint32(42)},
+		{Namespace: "test", Key: "key2", Type: "string", Value: "hello"},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mockF := &mockFlasher{readFlashVal: existingData}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":      "/dev/ttyUSB0",
+		"namespace": "test",
+		"key":       "key1",
+	}
+
+	result, err := handleNVSDelete(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.False(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	var resp map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(tc.Text), &resp))
+	assert.Equal(t, "success", resp["status"])
+	assert.Equal(t, float64(1), resp["deleted"])
+	assert.True(t, mockF.flashImagesCalled)
+}
+
+func TestHandleNVSDeleteAbortsOnLossyParse(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "key1", Type: "u32", Value: uint32(42)},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	tampered := append([]byte(nil), data...)
+	page := tampered[0:nvs.PageSize]
+	const slot = 100
+	bitIndex := uint(slot) * 2
+	byteIdx := nvs.HeaderSize + int(bitIndex/8)
+	bitOffset := bitIndex % 8
+	page[byteIdx] &^= 1 << bitOffset
+
+	mockF := &mockFlasher{readFlashVal: tampered}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":      "/dev/ttyUSB0",
+		"namespace": "test",
+		"key":       "key1",
+	}
+
+	result, err := handleNVSDelete(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "lossy")
+	assert.False(t, mockF.flashImagesCalled, "must not flash when the pre-write parse is lossy")
+}
+
+func TestHandleNVSDeleteAbortsOnPostWriteVerifyFailure(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	existingData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "key1", Type: "u32", Value: uint32(42)},
+		{Namespace: "test", Key: "key2", Type: "string", Value: "hello"},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Device comes back empty after deleting key1 — key2 was also lost.
+	postWriteData, err := nvs.GenerateNVS(nil, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mockF := &mockFlasher{
+		readFlashVal:               existingData,
+		readFlashPostWriteOverride: postWriteData,
+	}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return mockF, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]interface{}{
+		"port":      "/dev/ttyUSB0",
+		"namespace": "test",
+		"key":       "key1",
+	}
+
+	result, err := handleNVSDelete(context.Background(), req)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError)
+
+	tc, ok := result.Content[0].(mcp.TextContent)
+	require.True(t, ok)
+	assert.Contains(t, tc.Text, "post-write verify")
+	assert.Contains(t, tc.Text, "key2")
+	assert.True(t, mockF.flashImagesCalled)
 }

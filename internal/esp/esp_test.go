@@ -45,6 +45,12 @@ type mockFlasher struct {
 	readFlashErr        error
 	readFlashVal        []byte
 	flashImagesData     []espflasher.ImagePart
+
+	// readFlashPostWriteOverride, if non-nil, is returned by ReadFlash for
+	// every call after FlashImages has been called, instead of the
+	// just-flashed data. Lets tests simulate a device whose post-write state
+	// doesn't match what was written (verify-failure paths).
+	readFlashPostWriteOverride []byte
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -111,6 +117,22 @@ func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
 }
 
 func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error) {
+	if m.readFlashErr != nil {
+		return nil, m.readFlashErr
+	}
+	if m.flashImagesCalled {
+		if m.readFlashPostWriteOverride != nil {
+			return m.readFlashPostWriteOverride, nil
+		}
+		// Simulate a real device: serve back the bytes that were actually
+		// flashed to this offset, so post-write verification observes the
+		// genuine round trip instead of stale pre-write data.
+		for _, img := range m.flashImagesData {
+			if img.Offset == offset && uint32(len(img.Data)) >= size {
+				return img.Data[:size], nil
+			}
+		}
+	}
 	return m.readFlashVal, m.readFlashErr
 }
 
@@ -853,8 +875,9 @@ func TestNVSSetNewKey(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSSet(factory, "/dev/ttyUSB0", "test", "key2", "string", "world", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key2", "string", "world", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
 	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 
 	// Verify FlashImages was called
 	assert.True(t, mock.flashImagesCalled)
@@ -876,8 +899,9 @@ func TestNVSSetUpdateKey(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSSet(factory, "/dev/ttyUSB0", "test", "key1", "u32", uint32(100), 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSSet(factory, "/dev/ttyUSB0", "test", "key1", "u32", uint32(100), 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
 	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 
 	// Verify FlashImages was called
 	assert.True(t, mock.flashImagesCalled)
@@ -898,8 +922,9 @@ func TestNVSDeleteKey(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
 	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 
 	assert.True(t, mock.flashImagesCalled)
 	assert.True(t, mock.resetCalled)
@@ -921,8 +946,9 @@ func TestNVSDeleteNamespace(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSDelete(factory, "/dev/ttyUSB0", "test", "", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	result, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
 	require.NoError(t, err)
+	assert.Equal(t, 2, result.Applied)
 
 	assert.True(t, mock.flashImagesCalled)
 	assert.True(t, mock.resetCalled)
@@ -936,7 +962,7 @@ func TestNVSDeleteReadError(t *testing.T) {
 		return mock, nil
 	}
 
-	err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	_, err := NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 0, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read NVS")
 }
@@ -962,8 +988,9 @@ func TestNVSSetBatch(t *testing.T) {
 		{Namespace: "test", Key: "new_key", Type: "string", Value: "hello"},
 	}
 
-	err = NVSSetBatch(factory, "test-port", updates, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	result, err := NVSSetBatch(factory, "test-port", updates, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
 	require.NoError(t, err)
+	assert.Equal(t, 2, result.Applied)
 
 	assert.True(t, mock.flashImagesCalled)
 	assert.True(t, mock.resetCalled)
@@ -994,7 +1021,7 @@ func TestNVSSetBatchReadError(t *testing.T) {
 		return mock, nil
 	}
 
-	err := NVSSetBatch(factory, "test-port", []NVSUpdate{
+	_, err := NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
 	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
 	require.Error(t, err)
@@ -1014,7 +1041,7 @@ func TestNVSSetBatchFlashError(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSSetBatch(factory, "test-port", []NVSUpdate{
+	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
 		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
 	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
 	require.Error(t, err)
@@ -1033,8 +1060,9 @@ func TestNVSSetUsesNVSSetBatch(t *testing.T) {
 		return mock, nil
 	}
 
-	err = NVSSet(factory, "test-port", "ns", "key", "u32", uint32(999), 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	result, err := NVSSet(factory, "test-port", "ns", "key", "u32", uint32(999), 0x9000, uint32(nvs.DefaultPartSize), 0, "")
 	require.NoError(t, err)
+	assert.Equal(t, 1, result.Applied)
 
 	assert.True(t, mock.flashImagesCalled)
 	require.Len(t, mock.flashImagesData, 1)
@@ -1044,6 +1072,236 @@ func TestNVSSetUsesNVSSetBatch(t *testing.T) {
 	require.Len(t, written, 1)
 	assert.Equal(t, "key", written[0].Key)
 	assert.Equal(t, uint32(999), written[0].Value)
+}
+
+// tamperInjectUnaccountedSlot returns a copy of data with the entry-state
+// bitmap bit for (pageNum, slot) flipped from Empty (0b11) to Written
+// (0b10), without writing any real entry there. The slot's 32 bytes stay
+// 0xFF-filled (GenerateNVS's default fill for unused space), so
+// nvs.ParseNVS decodes it as an entry with namespaceIdx 0xFF — unresolvable
+// against any real namespace — and silently drops it as an orphaned key.
+// That's exactly the "written slot the parser doesn't account for" shape
+// the BR-53 completeness guard exists to catch.
+func tamperInjectUnaccountedSlot(data []byte, pageNum, slot int) []byte {
+	tampered := append([]byte(nil), data...)
+	page := tampered[pageNum*nvs.PageSize : (pageNum+1)*nvs.PageSize]
+	bitIndex := uint(slot) * 2
+	byteIdx := nvs.HeaderSize + int(bitIndex/8)
+	bitOffset := bitIndex % 8
+	page[byteIdx] &^= 1 << bitOffset // clear low bit: Empty(0b11) -> Written(0b10)
+	return tampered
+}
+
+func TestVerifyLosslessParseCleanPartition(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+		{Namespace: "test", Key: "k2", Type: "string", Value: "hello world"},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	parsed, err := nvs.ParseNVS(data)
+	require.NoError(t, err)
+
+	assert.NoError(t, verifyLosslessParse(data, parsed))
+}
+
+func TestVerifyLosslessParseDetectsUnaccountedSlot(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	tampered := tamperInjectUnaccountedSlot(data, 0, 100)
+
+	parsed, err := nvs.ParseNVS(tampered)
+	require.NoError(t, err) // the codec silently drops the orphaned slot; no parse error
+
+	err = verifyLosslessParse(tampered, parsed)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lossy")
+}
+
+func TestNVSSetBatchAbortsOnLossyParse(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+	tampered := tamperInjectUnaccountedSlot(data, 0, 100)
+
+	mock := &mockFlasher{readFlashVal: tampered}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
+		{Namespace: "test", Key: "k2", Type: "u8", Value: uint8(1)},
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lossy")
+	assert.False(t, mock.flashImagesCalled, "must not flash when the pre-write parse is lossy")
+}
+
+func TestNVSDeleteAbortsOnLossyParse(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
+		{Namespace: "test", Key: "k2", Type: "string", Value: "hello"},
+	}
+	data, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+	tampered := tamperInjectUnaccountedSlot(data, 0, 100)
+
+	mock := &mockFlasher{readFlashVal: tampered}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "k1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "lossy")
+	assert.False(t, mock.flashImagesCalled, "must not flash when the pre-write parse is lossy")
+}
+
+func TestNVSSetBatchAbortsOnPostWriteVerifyFailure(t *testing.T) {
+	existingEntries := []nvs.Entry{
+		{Namespace: "test", Key: "existing", Type: "u8", Value: uint8(1)},
+	}
+	existingData, err := nvs.GenerateNVS(existingEntries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Simulate a device that, after the write, is missing the pre-existing
+	// "existing" key entirely (only the new key landed).
+	postWriteData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "new_key", Type: "string", Value: "hello"},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{
+		readFlashVal:               existingData,
+		readFlashPostWriteOverride: postWriteData,
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
+		{Namespace: "test", Key: "new_key", Type: "string", Value: "hello"},
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-write verify")
+	assert.Contains(t, err.Error(), "existing")
+	assert.True(t, mock.flashImagesCalled) // the write itself happened; verification is what fails
+}
+
+func TestNVSSetBatchVerifiesRequestedValueLanded(t *testing.T) {
+	existingData, err := nvs.GenerateNVS(nil, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Simulate a device where the write silently applied the wrong value.
+	postWriteData, err := nvs.GenerateNVS([]nvs.Entry{
+		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(99)},
+	}, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{
+		readFlashVal:               existingData,
+		readFlashPostWriteOverride: postWriteData,
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err = NVSSetBatch(factory, "test-port", []NVSUpdate{
+		{Namespace: "test", Key: "k", Type: "u8", Value: uint8(1)},
+	}, 0x9000, uint32(nvs.DefaultPartSize), 0, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-write verify")
+	assert.Contains(t, err.Error(), "value mismatch")
+}
+
+func TestNVSDeleteAbortsOnPostWriteVerifyFailure(t *testing.T) {
+	entries := []nvs.Entry{
+		{Namespace: "test", Key: "key1", Type: "u32", Value: uint32(42)},
+		{Namespace: "test", Key: "key2", Type: "string", Value: "hello"},
+	}
+	existingData, err := nvs.GenerateNVS(entries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	// Simulate a device that, after deleting key1, comes back empty —
+	// key2 (not targeted by the delete) was also lost.
+	postWriteData, err := nvs.GenerateNVS(nil, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{
+		readFlashVal:               existingData,
+		readFlashPostWriteOverride: postWriteData,
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err = NVSDelete(factory, "/dev/ttyUSB0", "test", "key1", 0x9000, uint32(nvs.DefaultPartSize), 115200, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-write verify")
+	assert.Contains(t, err.Error(), "key2")
+	assert.True(t, mock.flashImagesCalled)
+}
+
+// TestVerifyLosslessParseRealESPIDFBlobPartition exercises the completeness
+// guard against a real esp-idf-generated NVS image (not synthesized by
+// nvs.GenerateNVS) containing a chunked blob split across BLOB_IDX +
+// BLOB_DATA entries, which ParseNVS decodes generically as "raw" entries
+// carrying a populated Span rather than as native "blob" entries. This
+// exercises entrySlotSpan's Span>0 fast-path plus countNamespaceDeclarationSlots
+// against ground truth from a device-produced partition, independent of
+// nvs.GenerateNVS's own layout choices.
+func TestVerifyLosslessParseRealESPIDFBlobPartition(t *testing.T) {
+	data, err := os.ReadFile("testdata/real_espidf_nvs.bin")
+	require.NoError(t, err)
+
+	entries, err := nvs.ParseNVS(data)
+	require.NoError(t, err)
+	require.Len(t, entries, 9)
+
+	pages, err := validNVSPages(data)
+	require.NoError(t, err)
+
+	written := countWrittenSlots(pages)
+	nsSlots := countNamespaceDeclarationSlots(pages)
+	accounted := accountedSlots(entries, nsSlots)
+
+	assert.Equal(t, 207, written, "ground-truth written-slot bitmap popcount regressed")
+	assert.Equal(t, 3, nsSlots, "namespace-declaration slot count regressed (wifi_cfg, app_cfg, blob_ns)")
+	assert.Equal(t, 207, accounted, "accounted slots must match written slots for a lossless parse")
+
+	assert.NoError(t, verifyLosslessParse(data, entries))
+}
+
+// TestEntrySlotSpanBlobType locks entrySlotSpan's native "blob" branch
+// (distinct from the Span>0 fast-path exercised by real chunked-blob
+// partitions above, where ESP-IDF's BLOB_IDX/BLOB_DATA layout decodes as
+// "raw" with Span already populated) against known span math: 1 header slot
+// plus ceil(len/32) data slots.
+func TestEntrySlotSpanBlobType(t *testing.T) {
+	tests := []struct {
+		name     string
+		blobLen  int
+		wantSpan int
+	}{
+		{"empty blob", 0, 2},        // 1 header + 1 min data entry (dataEntriesFor(0)==1)
+		{"under one slot", 10, 2},   // 1 header + ceil(10/32)=1
+		{"exactly one slot", 32, 2}, // 1 header + ceil(32/32)=1
+		{"spans two slots", 33, 3},  // 1 header + ceil(33/32)=2
+		{"large blob", 6144, 193},   // 1 header + ceil(6144/32)=192
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := nvs.Entry{Type: "blob", Value: make([]byte, tt.blobLen)}
+			assert.Equal(t, tt.wantSpan, entrySlotSpan(e))
+		})
+	}
 }
 
 func TestFlashESPForceOffsetsSkipsValidation(t *testing.T) {
