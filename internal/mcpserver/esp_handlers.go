@@ -611,7 +611,7 @@ func handleNVSSet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	err = esp.NVSSetBatch(factory, port, updates, offset, size, baudRate, resetMode)
+	writeResult, err := esp.NVSSetBatch(factory, port, updates, offset, size, baudRate, resetMode)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -621,7 +621,7 @@ func handleNVSSet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 
 	result := map[string]interface{}{
 		"status":  "success",
-		"updated": len(updates),
+		"updated": writeResult.Applied,
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
@@ -650,7 +650,7 @@ func handleNVSDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	err = esp.NVSDelete(factory, port, namespace, key, offset, size, baudRate, resetMode)
+	writeResult, err := esp.NVSDelete(factory, port, namespace, key, offset, size, baudRate, resetMode)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -658,8 +658,9 @@ func handleNVSDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 
-	result := map[string]string{
-		"status": "success",
+	result := map[string]interface{}{
+		"status":  "success",
+		"deleted": writeResult.Applied,
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {

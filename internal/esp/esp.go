@@ -531,8 +531,16 @@ func WriteNVS(factory FlasherFactory, port string, entries []nvs.Entry, offset, 
 	return err
 }
 
+// NVSWriteResult reports the actually-verified outcome of a read-modify-
+// write NVS operation. Applied is only ever set after a post-write re-read
+// of the device confirmed every requested change landed and nothing
+// pre-existing was lost — success is never reported on trust alone.
+type NVSWriteResult struct {
+	Applied int `json:"applied"`
+}
+
 // NVSSet reads the current NVS, sets/updates a single key, and writes back.
-func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, value interface{}, offset, size uint32, baudRate int, resetMode string) error {
+func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, value interface{}, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
 	return NVSSetBatch(factory, port, []NVSUpdate{
 		{Namespace: namespace, Key: key, Type: typ, Value: value},
 	}, offset, size, baudRate, resetMode)
@@ -541,7 +549,14 @@ func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, val
 // NVSDelete reads the current NVS, removes a key or namespace, and writes back
 // in a single flasher session (one device reset instead of two).
 // If key is empty, deletes all entries in the namespace.
-func NVSDelete(factory FlasherFactory, port string, namespace, key string, offset, size uint32, baudRate int, resetMode string) error {
+//
+// Before generating a replacement partition image, verifyLosslessParse
+// (BR-53) confirms nvs.ParseNVS accounted for every entry slot the device's
+// raw NVS bitmap reports as Written; a lossy parse aborts before anything is
+// flashed. After the write, the partition is re-read and re-parsed so the
+// reported result reflects what the device actually holds, not what was
+// merely requested.
+func NVSDelete(factory FlasherFactory, port string, namespace, key string, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -555,7 +570,7 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 
 	f, err := factory(port, flashOpts)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("connect: %w", err)
 	}
 	defer func() {
 		f.Reset()
@@ -565,12 +580,16 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 	// Read current NVS
 	data, err := f.ReadFlash(offset, size, nil)
 	if err != nil {
-		return fmt.Errorf("read NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("read NVS: %w", err)
 	}
 
 	entries, err := nvs.ParseNVS(data)
 	if err != nil {
-		return fmt.Errorf("parse NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("parse NVS: %w", err)
+	}
+
+	if err := verifyLosslessParse(data, entries); err != nil {
+		return NVSWriteResult{}, err
 	}
 
 	// Filter out deleted entries
@@ -592,17 +611,31 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 	// Generate and write back
 	newData, err := nvs.GenerateNVS(filtered, int(size))
 	if err != nil {
-		return fmt.Errorf("generate NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("generate NVS: %w", err)
 	}
 
 	err = f.FlashImages([]espflasher.ImagePart{
 		{Data: newData, Offset: offset},
 	}, func(current, total int) {})
 	if err != nil {
-		return fmt.Errorf("write NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("write NVS: %w", err)
 	}
 
-	return nil
+	verifyData, err := f.ReadFlash(offset, size, nil)
+	if err != nil {
+		return NVSWriteResult{}, fmt.Errorf("post-write verify: read back NVS: %w", err)
+	}
+	postEntries, err := nvs.ParseNVS(verifyData)
+	if err != nil {
+		return NVSWriteResult{}, fmt.Errorf("post-write verify: parse NVS: %w", err)
+	}
+
+	deleted, err := verifyDeleteApplied(entries, postEntries, namespace, key)
+	if err != nil {
+		return NVSWriteResult{}, err
+	}
+
+	return NVSWriteResult{Applied: deleted}, nil
 }
 
 // NVSUpdate describes a single key update for batch NVS operations.
@@ -615,7 +648,14 @@ type NVSUpdate struct {
 
 // NVSSetBatch reads the current NVS, applies multiple updates, and writes back
 // in a single flasher session (one device reset instead of 2N).
-func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offset, size uint32, baudRate int, resetMode string) error {
+//
+// Before generating a replacement partition image, verifyLosslessParse
+// (BR-53) confirms nvs.ParseNVS accounted for every entry slot the device's
+// raw NVS bitmap reports as Written; a lossy parse aborts before anything is
+// flashed. After the write, the partition is re-read and re-parsed so the
+// reported result reflects what the device actually holds, not what was
+// merely requested.
+func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -629,7 +669,7 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 
 	f, err := factory(port, flashOpts)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("connect: %w", err)
 	}
 	defer func() {
 		f.Reset()
@@ -639,13 +679,19 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 	// Read current NVS
 	data, err := f.ReadFlash(offset, size, nil)
 	if err != nil {
-		return fmt.Errorf("read NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("read NVS: %w", err)
 	}
 
 	entries, err := nvs.ParseNVS(data)
 	if err != nil {
-		return fmt.Errorf("parse NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("parse NVS: %w", err)
 	}
+
+	if err := verifyLosslessParse(data, entries); err != nil {
+		return NVSWriteResult{}, err
+	}
+
+	preEntries := append([]nvs.Entry(nil), entries...)
 
 	// Apply all updates (upsert)
 	for _, u := range updates {
@@ -671,7 +717,7 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 	// Generate new NVS binary
 	newData, err := nvs.GenerateNVS(entries, int(size))
 	if err != nil {
-		return fmt.Errorf("generate NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("generate NVS: %w", err)
 	}
 
 	// Write back in same session
@@ -679,8 +725,22 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 		{Data: newData, Offset: offset},
 	}, func(current, total int) {})
 	if err != nil {
-		return fmt.Errorf("write NVS: %w", err)
+		return NVSWriteResult{}, fmt.Errorf("write NVS: %w", err)
 	}
 
-	return nil
+	verifyData, err := f.ReadFlash(offset, size, nil)
+	if err != nil {
+		return NVSWriteResult{}, fmt.Errorf("post-write verify: read back NVS: %w", err)
+	}
+	postEntries, err := nvs.ParseNVS(verifyData)
+	if err != nil {
+		return NVSWriteResult{}, fmt.Errorf("post-write verify: parse NVS: %w", err)
+	}
+
+	applied, err := verifySetApplied(preEntries, postEntries, updates)
+	if err != nil {
+		return NVSWriteResult{}, err
+	}
+
+	return NVSWriteResult{Applied: applied}, nil
 }
