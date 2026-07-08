@@ -40,7 +40,7 @@ Disabling the whole plugin also removes the agents, but takes the MCP tools with
 
 ## Hooks
 
-- **SessionStart** — install binary from GitHub release, local Homebrew, or dev path
+- **SessionStart** — single hook entry (`scripts/self-heal.js`, pure Node, no npm deps): installs the binary from GitHub release, local Homebrew, or dev path (release archives are `tar.gz` on every platform, verified by SHA256 and extracted with a built-in tar/gzip reader — no `unzip`), then validates the binary and every hook script actually exist on disk, re-running the installer if the binary is missing/broken. Best-effort and fail-open: never blocks session start, and never writes `settings.json` (hook registration stays static in `hooks.json`).
 - **UserPromptSubmit** — detect ESP-IDF project and inject context reminder
 
 ## Configuration

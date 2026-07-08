@@ -20,9 +20,6 @@ builds:
     binary: pogo
 archives:
   - formats: [tar.gz]
-    format_overrides:
-      - goos: darwin
-        formats: [zip]
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'

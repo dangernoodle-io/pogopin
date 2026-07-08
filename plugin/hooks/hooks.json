@@ -1,7 +1,7 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/install.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/self-heal.js" } ] }
     ],
     "UserPromptSubmit": [
       { "hooks": [ { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/context.sh" } ] }

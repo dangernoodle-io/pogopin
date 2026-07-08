@@ -55,11 +55,27 @@ test('hooks.json SessionStart[0].hooks[0].type === "command"', () => {
   assert.equal(type, 'command');
 });
 
-test('hooks.json SessionStart[0].hooks[0].command contains install.sh', () => {
+test('hooks.json SessionStart has exactly one entry', () => {
+  const content = fs.readFileSync(hooksJsonPath, 'utf8');
+  const parsed = JSON.parse(content);
+  assert.equal(parsed.hooks.SessionStart.length, 1);
+});
+
+test('hooks.json SessionStart[0].hooks[0].command contains self-heal.js', () => {
   const content = fs.readFileSync(hooksJsonPath, 'utf8');
   const parsed = JSON.parse(content);
   const command = parsed.hooks.SessionStart[0].hooks[0].command;
-  assert.ok(command.includes('install.sh'), `expected command to contain install.sh, got ${command}`);
+  assert.ok(command.includes('self-heal.js'), `expected command to contain self-heal.js, got ${command}`);
+});
+
+test('hooks.json never references install.sh', () => {
+  const content = fs.readFileSync(hooksJsonPath, 'utf8');
+  assert.ok(!content.includes('install.sh'), 'hooks.json must not reference install.sh');
+});
+
+test('install.sh no longer exists in plugin/scripts', () => {
+  const installShPath = path.join(__dirname, '..', 'scripts', 'install.sh');
+  assert.ok(!fs.existsSync(installShPath), 'plugin/scripts/install.sh should have been removed');
 });
 
 test('hooks.json UserPromptSubmit[0].hooks[0].command contains context.sh', () => {
