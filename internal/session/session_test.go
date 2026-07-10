@@ -844,6 +844,52 @@ func TestReleaseFlasherImmediateClosesFlasher(t *testing.T) {
 	portsMu.Unlock()
 }
 
+// TestReleaseFlasherImmediateForceResetsHeldSession verifies that an
+// immediate release always resets the cached flasher and clears the
+// no-reset hold, even when a prior gpio op armed noResetOnExpire via
+// ReleaseFlasherDeferredNoReset — a mutating op (flash/erase/reset) must
+// explicitly return the chip to run mode and must not let the flag leak
+// into a later deferred release on a reused session.
+func TestReleaseFlasherImmediateForceResetsHeldSession(t *testing.T) {
+	setupTestPorts(t)
+	setupFastWaitForPort(t)
+
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	ports[tmpfile.Name()] = &PortSession{
+		mgr:             mgr,
+		port:            tmpfile.Name(),
+		baud:            115200,
+		mode:            ModeFlasher,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	portsMu.Unlock()
+
+	sess := ports[tmpfile.Name()]
+	newPort := ReleaseFlasherImmediate(sess, tmpfile.Name())
+
+	assert.Equal(t, "", newPort)
+	assert.True(t, mock.resetCalled, "immediate release must force Reset() even with the no-reset hold armed")
+	assert.True(t, mock.closeCalled, "immediate release must Close() the cached flasher")
+	portsMu.Lock()
+	assert.Nil(t, sess.flasher)
+	assert.Equal(t, ModeReader, sess.mode)
+	assert.False(t, sess.noResetOnExpire, "hold must be cleared so it can't leak into a reused session")
+	portsMu.Unlock()
+}
+
 func TestReleaseFlasherImmediateRestartsReader(t *testing.T) {
 	setupTestPorts(t)
 	setupFastWaitForPort(t)
@@ -1606,4 +1652,591 @@ func TestOpenForFlasher(t *testing.T) {
 	assert.Nil(t, p3)
 	assert.False(t, portCalled, "serialOpen should not be called for ModeReader port")
 	assert.Contains(t, err3.Error(), "not in ModeFlasher")
+}
+
+// Flasher-options fingerprint tests
+
+// TestAcquireForFlasherFingerprintMismatchDiscardsCache verifies that a
+// cached flasher built for a different requested baud is treated exactly
+// like a failed liveness probe: closed and discarded, with a fresh flasher
+// constructed for the new caller's opts, instead of being reused.
+func TestAcquireForFlasherFingerprintMismatchDiscardsCache(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	cachedMock := &mockFlasher{chipNameVal: "ESP32-cached"}
+	freshMock := &mockFlasher{chipNameVal: "ESP32-fresh"}
+
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return freshMock, nil
+	}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:       mgr,
+		port:      "/dev/test",
+		baud:      115200,
+		mode:      ModePending,
+		flasher:   cachedMock,
+		flasherFP: flasherFingerprint{baud: 115200},
+	}
+	portsMu.Unlock()
+
+	sess, factory := AcquireForFlasher("/dev/test", nil)
+	require.NotNil(t, sess)
+
+	// op2 requests a different baud than the cached flasher was built with.
+	f, err := factory("/dev/test", &espflasher.FlasherOptions{BaudRate: 230400})
+	require.NoError(t, err)
+
+	borrowed, ok := f.(*BorrowedFlasher)
+	require.True(t, ok, "factory should return BorrowedFlasher")
+	assert.Equal(t, freshMock, borrowed.Flasher, "fingerprint mismatch should discard the cached flasher and construct a fresh one")
+	assert.True(t, cachedMock.closeCalled, "mismatched cached flasher must be closed")
+	assert.False(t, cachedMock.flashIDCalled, "liveness probe should be skipped once a fingerprint mismatch is known")
+
+	// onReturn (fired by Close, mirroring the real caller's flow) records the
+	// new opts' fingerprint on the session.
+	require.NoError(t, borrowed.Close())
+	portsMu.Lock()
+	assert.Equal(t, flasherFingerprint{baud: 230400}, sess.flasherFP, "fresh construction should record the new opts' fingerprint")
+	portsMu.Unlock()
+}
+
+// TestAcquireForFlasherFingerprintMatchReusesCachedFlasher verifies that a
+// cached flasher built with the same baud as the new request is reused via
+// the normal BorrowedFlasher liveness-probe path, with no fresh flasher
+// construction.
+func TestAcquireForFlasherFingerprintMatchReusesCachedFlasher(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	cachedMock := &mockFlasher{chipNameVal: "ESP32"}
+	freshCalled := false
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		freshCalled = true
+		return &mockFlasher{}, nil
+	}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:       mgr,
+		port:      "/dev/test",
+		baud:      115200,
+		mode:      ModePending,
+		flasher:   cachedMock,
+		flasherFP: flasherFingerprint{baud: 115200},
+	}
+	portsMu.Unlock()
+
+	sess, factory := AcquireForFlasher("/dev/test", nil)
+	require.NotNil(t, sess)
+
+	f, err := factory("/dev/test", &espflasher.FlasherOptions{BaudRate: 115200})
+	require.NoError(t, err)
+
+	borrowed, ok := f.(*BorrowedFlasher)
+	require.True(t, ok, "factory should return BorrowedFlasher")
+	assert.Equal(t, cachedMock, borrowed.Flasher, "matching fingerprint should reuse the cached flasher")
+	assert.True(t, cachedMock.flashIDCalled, "liveness probe should still run when fingerprint matches")
+	assert.False(t, cachedMock.closeCalled, "a reused flasher must not be closed")
+	assert.False(t, freshCalled, "newFlasherFactory should not be called when the cache is reused")
+}
+
+// TestAcquireForFlasherSkipStubMismatchDiscardsCache verifies that a cached
+// flasher connected with the stub loader (SkipStub=false) is treated exactly
+// like a baud mismatch when a new caller requests SkipStub=true within the
+// window: closed and discarded, with a fresh flasher constructed for the new
+// caller's opts, instead of being reused. Reusing a stub-loaded handle for a
+// SkipStub=true caller would resurrect the magic-0x9 reconnect failure.
+func TestAcquireForFlasherSkipStubMismatchDiscardsCache(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	cachedMock := &mockFlasher{chipNameVal: "ESP32-cached"}
+	freshMock := &mockFlasher{chipNameVal: "ESP32-fresh"}
+
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return freshMock, nil
+	}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:       mgr,
+		port:      "/dev/test",
+		baud:      115200,
+		mode:      ModePending,
+		flasher:   cachedMock,
+		flasherFP: flasherFingerprint{baud: 115200, skipStub: false},
+	}
+	portsMu.Unlock()
+
+	sess, factory := AcquireForFlasher("/dev/test", nil)
+	require.NotNil(t, sess)
+
+	// The new caller requests SkipStub=true, but the cached flasher was
+	// stub-loaded (SkipStub=false).
+	f, err := factory("/dev/test", &espflasher.FlasherOptions{BaudRate: 115200, SkipStub: true})
+	require.NoError(t, err)
+
+	borrowed, ok := f.(*BorrowedFlasher)
+	require.True(t, ok, "factory should return BorrowedFlasher")
+	assert.Equal(t, freshMock, borrowed.Flasher, "SkipStub mismatch should discard the cached flasher and construct a fresh one")
+	assert.True(t, cachedMock.closeCalled, "mismatched cached flasher must be closed")
+	assert.False(t, cachedMock.flashIDCalled, "liveness probe should be skipped once a fingerprint mismatch is known")
+
+	require.NoError(t, borrowed.Close())
+	portsMu.Lock()
+	assert.Equal(t, flasherFingerprint{baud: 115200, skipStub: true}, sess.flasherFP, "fresh construction should record the new opts' fingerprint")
+	portsMu.Unlock()
+}
+
+// No-reset-on-expire tests
+
+// TestReleaseFlasherDeferredNoResetSkipsUnderlyingReset verifies that
+// ReleaseFlasherDeferredNoReset causes expireSession to skip the underlying
+// flasher.Reset() call (Close() still runs), and that the flag is cleared
+// afterward so it can't leak into a later session lifecycle.
+func TestReleaseFlasherDeferredNoResetSkipsUnderlyingReset(t *testing.T) {
+	setupTestPorts(t)
+	setupFastDeferred(t)
+	setupFastWaitForPort(t)
+
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:     mgr,
+		port:    tmpfile.Name(),
+		baud:    115200,
+		mode:    ModeFlasher,
+		flasher: mock,
+	}
+	ports[tmpfile.Name()] = sess
+	portsMu.Unlock()
+
+	ReleaseFlasherDeferredNoReset(sess, tmpfile.Name())
+
+	portsMu.Lock()
+	assert.Equal(t, ModePending, sess.mode)
+	assert.True(t, sess.noResetOnExpire, "flag should be set immediately by ReleaseFlasherDeferredNoReset")
+	portsMu.Unlock()
+
+	// Wait for the (fast) deferred timer to fire and expireSession to run.
+	// Poll under portsMu (rather than a bare time.Sleep) so the successful
+	// Lock/Unlock pair establishes a happens-before edge with the timer
+	// goroutine's closeCachedFlasher call — a plain sleep gives no such
+	// synchronization and races under -race with mock.closeCalled/
+	// resetCalled, which are plain fields mutated by that other goroutine.
+	require.Eventually(t, func() bool {
+		portsMu.Lock()
+		defer portsMu.Unlock()
+		return sess.flasher == nil
+	}, time.Second, time.Millisecond, "expireSession should reap the cached flasher")
+
+	assert.True(t, mock.closeCalled, "Close() should still be called on no-reset expiry")
+	assert.False(t, mock.resetCalled, "Reset() should be skipped on no-reset expiry")
+
+	portsMu.Lock()
+	assert.False(t, sess.noResetOnExpire, "flag should be cleared after being consumed by expireSession")
+	portsMu.Unlock()
+}
+
+// TestReleaseFlasherDeferredResetsUnderlyingFlasherNormally is the control
+// case for TestReleaseFlasherDeferredNoResetSkipsUnderlyingReset: the normal
+// ReleaseFlasherDeferred path must still call Reset() on expiry, proving the
+// no-reset sibling didn't change existing behavior.
+func TestReleaseFlasherDeferredResetsUnderlyingFlasherNormally(t *testing.T) {
+	setupTestPorts(t)
+	setupFastDeferred(t)
+	setupFastWaitForPort(t)
+
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:     mgr,
+		port:    tmpfile.Name(),
+		baud:    115200,
+		mode:    ModeFlasher,
+		flasher: mock,
+	}
+	ports[tmpfile.Name()] = sess
+	portsMu.Unlock()
+
+	ReleaseFlasherDeferred(sess, tmpfile.Name())
+
+	// Poll under portsMu rather than a bare sleep — see the no-reset sibling
+	// test above for why an unsynchronized sleep-then-read races under -race.
+	require.Eventually(t, func() bool {
+		portsMu.Lock()
+		defer portsMu.Unlock()
+		return sess.flasher == nil
+	}, time.Second, time.Millisecond, "expireSession should reap the cached flasher")
+
+	assert.True(t, mock.resetCalled, "Reset() should be called on normal deferred expiry (control case)")
+	assert.True(t, mock.closeCalled, "Close() should be called on normal deferred expiry")
+}
+
+// TestExpireSessionHeldExpirySkipsMonitorRestart verifies the HW-validated
+// design fix: on a no-reset expiry, expireSession must NOT restart the
+// serial monitor/reader (Start is never called) — restarting it reopens the
+// port, which on native-USB chips disturbs the ROM bootloader's
+// download-mode state and breaks a subsequent no_reset GPIO reattach. The
+// held session is instead torn down (removed from the ports map) so it
+// looks, to a later AcquireForFlasher, exactly like a port with no existing
+// session — the next acquire must build a fresh flasher connection rather
+// than reuse anything.
+func TestExpireSessionHeldExpirySkipsMonitorRestart(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupFastWaitForPort(t)
+	setupTestFlasherFactory(t)
+
+	port := "/dev/cu.usbmodem1101"
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	startCalled := false
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			startCalled = true
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	freshMock := &mockFlasher{chipNameVal: "ESP32-fresh"}
+	newFlasherFactory = func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return freshMock, nil
+	}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:             newManagerFunc(1000),
+		port:            port,
+		baud:            115200,
+		mode:            ModePending,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	ports[port] = sess
+	portsMu.Unlock()
+
+	// Reset the OpenFunc call flag: newManagerFunc above was invoked once to
+	// build sess.mgr, which does not itself call OpenFunc — only mgr.Start
+	// would. Confirm no start happened yet before calling expireSession.
+	require.False(t, startCalled, "constructing the manager must not open the port")
+
+	expireSession(sess, port)
+
+	assert.True(t, mock.closeCalled, "cached flasher must still be Close()d on a held expiry")
+	assert.False(t, mock.resetCalled, "Reset() must be skipped on a held (no-reset) expiry")
+	assert.False(t, startCalled, "the serial monitor/reader must NOT be restarted on a held expiry — reopening the port breaks no_reset reattach on native-USB chips")
+
+	portsMu.Lock()
+	_, exists := ports[port]
+	portsMu.Unlock()
+	assert.False(t, exists, "held expiry must remove the session from the ports map, leaving the port idle for a clean reattach")
+
+	// A subsequent AcquireForFlasher for the same port must construct a
+	// fresh flasher rather than reuse anything from the reaped session.
+	newSess, factory := AcquireForFlasher(port, nil)
+	require.NotNil(t, newSess)
+	f, err := factory(port, &espflasher.FlasherOptions{})
+	require.NoError(t, err)
+	borrowed, ok := f.(*BorrowedFlasher)
+	require.True(t, ok)
+	assert.Equal(t, freshMock, borrowed.Flasher, "reattach after a held expiry must build a fresh flasher connection")
+}
+
+// TestExpireSessionNormalExpiryRestartsMonitor is the control case for
+// TestExpireSessionHeldExpirySkipsMonitorRestart: a normal (non-hold)
+// expiry must still Reset() the device and restart the serial monitor,
+// preserving existing behavior.
+func TestExpireSessionNormalExpiryRestartsMonitor(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupFastWaitForPort(t)
+
+	port := "/dev/cu.usbmodem1101"
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "serial-test-port-*")
+	require.NoError(t, err)
+	tmpPort := tmpFile.Name()
+	tmpFile.Close()
+
+	startCalled := false
+	newManagerFunc = func(bufSize int) *serial.Manager {
+		mgr := serial.NewManager()
+		mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+			startCalled = true
+			return &noopPort{}, nil
+		}
+		return mgr
+	}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:     newManagerFunc(1000),
+		port:    tmpPort,
+		baud:    115200,
+		mode:    ModePending,
+		flasher: mock,
+	}
+	ports[port] = sess
+	portsMu.Unlock()
+
+	expireSession(sess, tmpPort)
+
+	assert.True(t, mock.resetCalled, "Reset() must run on a normal (non-held) expiry")
+	assert.True(t, mock.closeCalled, "Close() must run on a normal expiry")
+	assert.True(t, startCalled, "the serial monitor/reader must be restarted on a normal expiry")
+
+	portsMu.Lock()
+	assert.Equal(t, ModeReader, sess.mode, "session should be back in ModeReader after a normal expiry restarts the monitor")
+	portsMu.Unlock()
+}
+
+// TestResolveSessionHonorsNoResetOnExpireHold verifies the CRITICAL finding
+// fix: a statusline/serial_read/serial_write/serial_status poll that routes
+// through ResolveSession while a pending session's no-reset hold is armed
+// (ReleaseFlasherDeferredNoReset) must reap the cached flasher via
+// closeCachedFlasher — Close() only, never Reset() — so a mid-gpio-probe
+// poll can't perturb pin state. The hold must also be consumed (cleared)
+// so it can't leak into a later session lifecycle.
+func TestResolveSessionHonorsNoResetOnExpireHold(t *testing.T) {
+	setupTestPorts(t)
+	setupFastWaitForPort(t)
+
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, tmpfile.Name(), 115200, nil)
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:             mgr,
+		port:            tmpfile.Name(),
+		baud:            115200,
+		mode:            ModePending,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	ports[tmpfile.Name()] = sess
+	portsMu.Unlock()
+
+	m, port, err := ResolveSession(map[string]interface{}{"port": tmpfile.Name()})
+	require.NoError(t, err)
+	assert.Equal(t, tmpfile.Name(), port)
+	assert.Equal(t, mgr, m)
+
+	portsMu.Lock()
+	assert.Equal(t, ModeReader, sess.mode)
+	assert.Nil(t, sess.flasher)
+	assert.False(t, sess.noResetOnExpire, "hold must be consumed by the reap so it can't leak into a later session")
+	portsMu.Unlock()
+
+	assert.True(t, mock.closeCalled, "Close() must still run when reaping a held session via ResolveSession")
+	assert.False(t, mock.resetCalled, "Reset() must be skipped when ResolveSession reaps a no-reset-held pending session")
+}
+
+// TestResolveSessionResetsCachedFlasherWithoutHold is the control case for
+// TestResolveSessionHonorsNoResetOnExpireHold: the same ResolveSession
+// pending-reap path, without the hold armed, must still Reset() the cached
+// flasher as before — proving centralizing the reap through
+// closeCachedFlasher didn't change the normal-case behavior.
+func TestResolveSessionResetsCachedFlasherWithoutHold(t *testing.T) {
+	setupTestPorts(t)
+	setupFastWaitForPort(t)
+
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, tmpfile.Name(), 115200, nil)
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:     mgr,
+		port:    tmpfile.Name(),
+		baud:    115200,
+		mode:    ModePending,
+		flasher: mock,
+	}
+	ports[tmpfile.Name()] = sess
+	portsMu.Unlock()
+
+	_, _, err = ResolveSession(map[string]interface{}{"port": tmpfile.Name()})
+	require.NoError(t, err)
+
+	assert.True(t, mock.resetCalled, "Reset() should still run on the normal (non-held) ResolveSession reap path")
+	assert.True(t, mock.closeCalled, "Close() should still run on the normal ResolveSession reap path")
+}
+
+// TestCleanupAllSessionsForceResetsHeldSession mirrors
+// TestReleaseFlasherImmediateForceResetsHeldSession: process shutdown must
+// leave boards in a clean run state, never stuck in the bootloader, so
+// CleanupAllSessions clears any armed no-reset hold before reaping a cached
+// flasher — Reset() and Close() both run regardless of noResetOnExpire.
+func TestCleanupAllSessionsForceResetsHeldSession(t *testing.T) {
+	setupTestPorts(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, "/dev/test", 115200, nil)
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:             mgr,
+		port:            "/dev/test",
+		baud:            115200,
+		mode:            ModePending,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	portsMu.Unlock()
+
+	CleanupAllSessions()
+
+	assert.True(t, mock.resetCalled, "CleanupAllSessions must force Reset() even with the no-reset hold armed")
+	assert.True(t, mock.closeCalled, "CleanupAllSessions must Close() the cached flasher")
+
+	portsMu.Lock()
+	_, exists := ports["/dev/test"]
+	portsMu.Unlock()
+	assert.False(t, exists, "session should be removed from the ports map")
+}
+
+// TestAcquireForExternalHonorsNoResetOnExpireHold verifies that
+// AcquireForExternal's reap of an existing session's cached flasher honors
+// an armed no-reset hold (ReleaseFlasherDeferredNoReset) the same way
+// ResolveSession's reap does: Close() runs, Reset() is skipped, and the
+// hold is consumed so it can't leak into the newly acquired external mode.
+func TestAcquireForExternalHonorsNoResetOnExpireHold(t *testing.T) {
+	setupTestPorts(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, "/dev/test", 115200, nil)
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:             mgr,
+		port:            "/dev/test",
+		baud:            115200,
+		mode:            ModePending,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	portsMu.Unlock()
+
+	sess := AcquireForExternal("/dev/test")
+	require.NotNil(t, sess)
+	assert.Equal(t, ModeExternal, sess.mode)
+
+	assert.False(t, mock.resetCalled, "AcquireForExternal must skip Reset() when the no-reset hold is armed")
+	assert.True(t, mock.closeCalled, "AcquireForExternal must still Close() the cached flasher")
+
+	portsMu.Lock()
+	assert.False(t, sess.noResetOnExpire, "hold must be consumed so it can't leak into the acquired external session")
+	portsMu.Unlock()
+}
+
+// TestStartSessionHonorsNoResetOnExpireHold verifies that StartSession's
+// reap of an existing session's cached flasher honors an armed no-reset
+// hold the same way ResolveSession's and AcquireForExternal's reaps do:
+// Close() runs, Reset() is skipped.
+func TestStartSessionHonorsNoResetOnExpireHold(t *testing.T) {
+	setupTestPorts(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	mgr.SetTestState(true, "/dev/test", 115200, nil)
+
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	ports["/dev/test"] = &PortSession{
+		mgr:             mgr,
+		port:            "/dev/test",
+		baud:            115200,
+		mode:            ModePending,
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	portsMu.Unlock()
+
+	err := StartSession("/dev/test", 115200, 1000)
+	require.NoError(t, err)
+
+	assert.False(t, mock.resetCalled, "StartSession must skip Reset() when the no-reset hold is armed")
+	assert.True(t, mock.closeCalled, "StartSession must still Close() the cached flasher")
+
+	portsMu.Lock()
+	sess, exists := ports["/dev/test"]
+	portsMu.Unlock()
+	require.True(t, exists)
+	assert.False(t, sess.noResetOnExpire, "hold must be consumed so it can't leak into the restarted session")
 }

@@ -18,6 +18,7 @@ var rootCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(decodeCmd)
 	rootCmd.AddCommand(mcpCmd)
+	rootCmd.AddCommand(gpioCmd)
 }
 
 // Execute runs the root command.

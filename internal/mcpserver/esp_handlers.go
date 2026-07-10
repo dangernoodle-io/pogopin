@@ -431,14 +431,16 @@ func handleESPReadFlash(ctx context.Context, req mcp.CallToolRequest) (*mcp.Call
 	}
 
 	if md5 {
-		// MD5 mode. Coarse computing-hash -> complete markers (separate
-		// emitter instance from connectEmit above — see
-		// connectStatusEmitter's doc comment). f.GetFlashMD5 has no
-		// byte-progress hook yet (a later phase adds one upstream), so this
-		// is a 2-step sequential signal, not a bar.
+		// MD5 mode. Real ETA-driven bar (separate emitter instance from
+		// connectEmit above — see connectStatusEmitter's doc comment). The
+		// fork's GetFlashMD5 takes an opt-in ProgressFunc that ticks a
+		// synthetic elapsed/estimated-ms bar for the device-silent hash
+		// computation, mirroring the erase path — forwarded straight to the
+		// op emitter under a fixed "computing hash" label.
 		opEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
-		status := newSequentialStatusEmitter(opEmit, 2)
-		result, err := esp.GetFlashMD5(factory, port, offset, size, baudRate, resetMode, status)
+		result, err := esp.GetFlashMD5(factory, port, offset, size, baudRate, resetMode, espflasher.ProgressFunc(func(current, total int) {
+			opEmit(current, total, "computing hash")
+		}))
 		if err != nil {
 			if syncResult := handleSyncError(err); syncResult != nil {
 				return syncResult, nil
@@ -547,16 +549,15 @@ var nvsPhaseOrdinal = map[string]int{
 const nvsPhaseTotal = 3
 
 // sequentialOnlyPhases documents the esp.StatusPhase* constants wired
-// through newSequentialStatusEmitter's call-order sequencing (handleReset,
-// handleESPReadFlash's md5 branch) rather than nvsStatusEmitter's byte/
-// ordinal maps. It's never consulted on the hot path — newSequentialStatusEmitter
-// accepts any phase generically, that's the point of not proliferating a
-// per-tool map — it exists purely so TestAllStatusPhasesClassified can
-// assert every esp.StatusPhase* constant is accounted for by exactly one
-// adapter, extending Phase 1's TestNVSPhaseClassificationCovered guard so a
-// new phase constant can't be added to esp.go without anyone wiring it.
+// through newSequentialStatusEmitter's call-order sequencing (handleReset)
+// rather than nvsStatusEmitter's byte/ordinal maps. It's never consulted on
+// the hot path — newSequentialStatusEmitter accepts any phase generically,
+// that's the point of not proliferating a per-tool map — it exists purely so
+// TestAllStatusPhasesClassified can assert every esp.StatusPhase* constant is
+// accounted for by exactly one adapter, extending Phase 1's
+// TestNVSPhaseClassificationCovered guard so a new phase constant can't be
+// added to esp.go without anyone wiring it.
 var sequentialOnlyPhases = map[string]struct{}{
-	esp.StatusPhaseComputingHash: {},
 	esp.StatusPhaseResetting:     {},
 	esp.StatusPhaseCapturingBoot: {},
 	esp.StatusPhaseComplete:      {},

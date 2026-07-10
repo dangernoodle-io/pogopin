@@ -25,6 +25,7 @@ type mockFlasher struct {
 	bootloaderOffsetVal uint32
 	bootloaderOffsetOK  bool
 	resetCalled         bool
+	resetCallCount      int
 	closeCalled         bool
 	flashImagesCalled   bool
 	eraseFlashCalled    bool
@@ -42,9 +43,18 @@ type mockFlasher struct {
 	getSecurityInfoVal  *espflasher.SecurityInfo
 	flashMD5Err         error
 	flashMD5Val         string
+	flashMD5Progress    espflasher.ProgressFunc
 	readFlashErr        error
 	readFlashVal        []byte
 	flashImagesData     []espflasher.ImagePart
+
+	readGPIOErr      error
+	readGPIOVal      bool
+	setGPIOErr       error
+	setGPIOCalls     []setGPIOCall
+	releaseGPIOErr   error
+	releaseGPIOCalls []int
+	gpioReservedFunc func(pin int) (bool, string)
 
 	// readFlashPostWriteOverride, if non-nil, is returned by ReadFlash for
 	// every call after FlashImages has been called, instead of the
@@ -91,6 +101,7 @@ func (m *mockFlasher) BootloaderFlashOffset() (uint32, bool) {
 
 func (m *mockFlasher) Reset() {
 	m.resetCalled = true
+	m.resetCallCount++
 }
 
 func (m *mockFlasher) Close() error {
@@ -112,7 +123,8 @@ func (m *mockFlasher) GetSecurityInfo() (*espflasher.SecurityInfo, error) {
 	return m.getSecurityInfoVal, m.getSecurityInfoErr
 }
 
-func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
+func (m *mockFlasher) GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error) {
+	m.flashMD5Progress = progress
 	return m.flashMD5Val, m.flashMD5Err
 }
 
@@ -137,6 +149,33 @@ func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.Progres
 }
 
 func (m *mockFlasher) FlushInput() {}
+
+// setGPIOCall records a single SetGPIO invocation for sequence assertions.
+type setGPIOCall struct {
+	pin   int
+	level bool
+}
+
+func (m *mockFlasher) ReadGPIO(pin int) (bool, error) {
+	return m.readGPIOVal, m.readGPIOErr
+}
+
+func (m *mockFlasher) SetGPIO(pin int, level bool) error {
+	m.setGPIOCalls = append(m.setGPIOCalls, setGPIOCall{pin: pin, level: level})
+	return m.setGPIOErr
+}
+
+func (m *mockFlasher) ReleaseGPIO(pin int) error {
+	m.releaseGPIOCalls = append(m.releaseGPIOCalls, pin)
+	return m.releaseGPIOErr
+}
+
+func (m *mockFlasher) GPIOReserved(pin int) (bool, string) {
+	if m.gpioReservedFunc != nil {
+		return m.gpioReservedFunc(pin)
+	}
+	return false, ""
+}
 
 func TestFlashESPSuccess(t *testing.T) {
 	// Create temp files for testing
@@ -726,7 +765,7 @@ func TestGetFlashMD5Success(t *testing.T) {
 	assert.True(t, mock.closeCalled)
 }
 
-func TestGetFlashMD5StatusPhaseSequence(t *testing.T) {
+func TestGetFlashMD5ForwardsProgress(t *testing.T) {
 	mock := &mockFlasher{
 		flashMD5Val: "5d41402abc4b2a76b9719d911017c592",
 	}
@@ -734,28 +773,31 @@ func TestGetFlashMD5StatusPhaseSequence(t *testing.T) {
 		return mock, nil
 	}
 
-	var ticks []string
-	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "", func(phase string, current, total int) {
-		ticks = append(ticks, phase)
-	})
+	var got [][2]int
+	progress := func(current, total int) { got = append(got, [2]int{current, total}) }
+
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "", progress)
 	require.NoError(t, err)
-	assert.Equal(t, []string{StatusPhaseComputingHash, StatusPhaseComplete}, ticks)
+	// The caller's ProgressFunc is threaded straight through to the fork's
+	// f.GetFlashMD5 ETA callback — assert the same func instance arrives, then
+	// drive it to confirm it's the real caller callback.
+	require.NotNil(t, mock.flashMD5Progress)
+	mock.flashMD5Progress(500, 1000)
+	assert.Equal(t, [][2]int{{500, 1000}}, got)
 }
 
-func TestGetFlashMD5StatusNoCompleteOnError(t *testing.T) {
+func TestGetFlashMD5NilProgress(t *testing.T) {
 	mock := &mockFlasher{
-		flashMD5Err: os.ErrPermission,
+		flashMD5Val: "5d41402abc4b2a76b9719d911017c592",
 	}
 	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
 		return mock, nil
 	}
 
-	var ticks []string
-	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "", func(phase string, current, total int) {
-		ticks = append(ticks, phase)
-	})
-	require.Error(t, err)
-	assert.Equal(t, []string{StatusPhaseComputingHash}, ticks)
+	// nil progress opts out entirely and is forwarded unchanged as nil.
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "", nil)
+	require.NoError(t, err)
+	assert.Nil(t, mock.flashMD5Progress)
 }
 
 func TestGetFlashMD5BaudDefault(t *testing.T) {
