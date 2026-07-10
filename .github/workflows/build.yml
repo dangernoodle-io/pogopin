@@ -34,3 +34,22 @@ jobs:
         with:
           version: latest
           args: --build-tags hwtest ./...
+
+  mock-bench:
+    # Hardware-free virtual-chip acceptance suite (internal/mockhw):
+    # subprocess wire-path bench (TestMockBench, 7 GPIO scenarios) plus the
+    # in-process mcpserver integration test (TestMockGPIOInProcess) — real
+    # espflasher/session code against a virtual ESP32-S2, no hardware
+    # attached, so unlike hwbench-check it's deterministic enough to be
+    # promoted to a required merge check (out-of-band branch-protection
+    # ruleset update, one-time, after the first green run).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Virtual-chip acceptance suite (no hardware)
+        run: make acc

@@ -1,10 +1,12 @@
 package serial
 
 import (
+	"errors"
 	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsLikelyUSBSerial(t *testing.T) {
@@ -118,6 +120,49 @@ func TestFilterNoisePorts(t *testing.T) {
 	assert.Contains(t, names, "/dev/cu.wchusbserial1440")
 	assert.Contains(t, names, "/dev/cu.SomeBoard")
 	assert.Len(t, names, 3, "only the three real board ports should remain")
+}
+
+// TestSetListPortsFn exercises the SetListPortsFn/ListPorts seam directly
+// (mirrors the listPortsFn seam-test pattern in internal/session): the
+// override routes through ListPorts, and SetListPortsFn returns the
+// previous function so callers can save/restore.
+func TestSetListPortsFn(t *testing.T) {
+	orig := listPortsFn
+	t.Cleanup(func() { listPortsFn = orig })
+
+	called := false
+	want := []PortInfo{{Name: "/dev/mock0"}}
+	prev := SetListPortsFn(func() ([]PortInfo, error) {
+		called = true
+		return want, nil
+	})
+	require.NotNil(t, prev)
+
+	got, err := ListPorts()
+	require.NoError(t, err)
+	assert.True(t, called, "ListPorts must route through the overridden fn")
+	assert.Equal(t, want, got)
+
+	wantErr := errors.New("boom")
+	SetListPortsFn(func() ([]PortInfo, error) { return nil, wantErr })
+	got, err = ListPorts()
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, wantErr)
+
+	restoredPrev := SetListPortsFn(prev)
+	assert.NotNil(t, restoredPrev, "SetListPortsFn must return the function it is replacing")
+}
+
+// TestDefaultListPorts exercises the production port-enumeration path
+// directly: it must not error and must return only non-noise ports (no
+// panics, no hardware required — go.bug.st/serial.GetPortsList is safe to
+// call with zero ports present).
+func TestDefaultListPorts(t *testing.T) {
+	ports, err := defaultListPorts()
+	require.NoError(t, err)
+	for _, p := range ports {
+		assert.False(t, isNoisePort(p.Name), "defaultListPorts must filter noise ports: %q", p.Name)
+	}
 }
 
 func TestIsNoisePort(t *testing.T) {

@@ -37,14 +37,34 @@ func filterNoisePorts(names []string) []PortInfo {
 	return result
 }
 
-// ListPorts returns every available serial port minus a minimal host-noise
-// denylist (Bluetooth / debug-console). Pure Go, no USB classification.
-func ListPorts() ([]PortInfo, error) {
+// listPortsFn is the injectable port-enumeration function backing ListPorts.
+// Overridable via SetListPortsFn for tests and the mock-hardware lane
+// (mockhw.Install), mirroring the listPortsFn seam pattern in
+// internal/session and internal/flash. Inert by default.
+var listPortsFn = defaultListPorts
+
+// defaultListPorts is the production port-enumeration path.
+func defaultListPorts() ([]PortInfo, error) {
 	ports, err := serial.GetPortsList()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ports: %w", err)
 	}
 	return filterNoisePorts(ports), nil
+}
+
+// SetListPortsFn sets the port listing function and returns the previous
+// value, so callers can save/restore it (test cleanup, or the mock-hardware
+// lane wiring in mockhw.Install/InstallT).
+func SetListPortsFn(fn func() ([]PortInfo, error)) func() ([]PortInfo, error) {
+	prev := listPortsFn
+	listPortsFn = fn
+	return prev
+}
+
+// ListPorts returns every available serial port minus a minimal host-noise
+// denylist (Bluetooth / debug-console). Pure Go, no USB classification.
+func ListPorts() ([]PortInfo, error) {
+	return listPortsFn()
 }
 
 // IsLikelyUSBSerial guesses whether a port name looks like a USB serial device

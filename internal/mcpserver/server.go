@@ -22,6 +22,8 @@ esp_* tools auto-stop the monitor and restart after the op.`
 
 // Serve starts the MCP server.
 func Serve() error {
+	maybeEnableMock()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

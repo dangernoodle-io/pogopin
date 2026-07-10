@@ -76,3 +76,54 @@ Each is a `t.Run` subtest under `TestHWBench`:
 5. **>5s-expiry reattach** (load-bearing): wait ~6s past the session's deferred-release idle window, then `esp_gpio_read` — must still succeed with no resync failure. Validates the no-reset-on-expire fix.
 6. Reserved-pin gate: `esp_gpio_set` on GPIO0 is refused by default with a "reserved" message.
 7. `esp_gpio_sweep` over the LED pin + GPIO0 drives the valid pin, skips the reserved one, and emits >=1 `notifications/progress`.
+
+## Hardware-free mock lane
+
+`TestMockBench` (`mock_test.go`) runs the same `runGPIOScenarios` suite as
+`TestHWBench` (shared via `bench_common_test.go`) against
+`internal/mockhw`'s virtual ESP32-S2 chip instead of a physical board —
+same stdio wire-protocol path (`mcp-go` client, real `pogo server`
+subprocess), no board attached. It complements the hardware lane above; it
+does not replace it. Silicon-specific quirks such as the magic-0x9
+regression (scenario 3) can only be validated on real hardware — the mock
+lane exists to catch tool-surface/protocol/session-logic regressions
+cheaply and deterministically in CI, not to simulate every hardware quirk.
+
+Untagged (no `hwtest` build tag) — the mock server binary is built
+separately with the `mock` build tag (see `internal/mockhw`'s package doc
+and `mcpserver.maybeEnableMock`), independent of this test binary's own
+tags. Gated on `ACC_POGOPIN` (mirrors `TF_ACC`) so it skips in a plain `go
+test ./...` run.
+
+```bash
+# no hardware, no ACC_POGOPIN: clean skip
+go test ./...
+
+# hardware-free mock bench
+make mock-bench
+
+# hardware-free in-process mcpserver integration test
+# (TestMockGPIOInProcess, internal/mcpserver/mock_integration_test.go)
+make mcp-mock
+
+# both, in one shot — the CI mock-bench job runs this
+make acc
+```
+
+### Environment variables (mock lane)
+
+| Var | Required | Default | Purpose |
+|-----|----------|---------|---------|
+| `ACC_POGOPIN` | yes | — | Gate; unset = the mock tests skip. Set automatically by `make mock-bench`/`mcp-mock`/`acc`. |
+| `ACC_POGOPIN_BOARD` | no | `s2` | Selects the board profile (same table as the hardware lane above). |
+| `ACC_POGOPIN_BIN` | no | — | Path to a pre-built `-tags mock` `pogo` binary. Unset = build one from the repo root with the `mock` tag. |
+
+`TestMockGPIOInProcess` (`internal/mcpserver/mock_integration_test.go`) is
+a sibling test in a different package — an in-process test (no
+subprocess) that drives the real MCP tool handlers directly against the
+virtual chip, exercising the actual espflasher/session code path at a
+lower level than this package's wire-protocol bench.
+
+CI runs both mock-lane suites, plus `hwbench-check` (the `hwtest`-tagged
+compile check above), as separate jobs — see `mock-bench` and
+`hwbench-check` in `.github/workflows/build.yml`.

@@ -16,7 +16,7 @@ make lint     # golangci-lint run
 make install  # go install .
 ```
 
-`make hwbench-check` compile-checks the MCP hardware-integration harness; see `test/hwbench/README.md` for the on-hardware test suite and run instructions.
+`make hwbench-check` compile-checks the MCP hardware-integration harness; `make mock-bench`/`make mcp-mock`/`make acc` run the hardware-free virtual-chip acceptance suite; see `test/hwbench/README.md` for both lanes and run instructions.
 
 ## Project layout
 
