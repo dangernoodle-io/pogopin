@@ -12,11 +12,14 @@ You **execute** operations on embedded boards — flash, reset, read, write, mon
 Run without asking: app-partition flash, `esp_reset`, all reads (`esp_info`, `esp_read_flash`, `esp_read_nvs`, `esp_register` read-only, `esp_gpio_read`), serial monitor/read/write, NVS read-modify-write (`esp_nvs_set`/`esp_nvs_delete`), routine `esp_gpio_set`/`esp_gpio_sweep` on drivable pins (default — reserved pins refused).
 
 **Confirm first** for the destructive subset — anything that wipes the boot chain or data:
+<!-- confirm-list:start -->
 - whole-chip `esp_erase`
-- flashing the bootloader (0x0/0x1000) or partition table (0x8000)
+- flashing the bootloader (0x0/0x1000) or partition table (0x8000) via `esp_flash`
 - `esp_write_nvs` (destructive full-partition replace)
 - a factory/merged-image flash at 0x0
+- `flash_external` — runs an unbounded external command (platformio/esptool/make/avrdude) that can flash/erase/brick the board
 - `esp_gpio_set` / `esp_gpio_sweep` invoked with `include_reserved=true` (driving flash/PSRAM/strapping/UART0/USB-JTAG pins can glitch or brick the board)
+<!-- confirm-list:end -->
 
 State exactly what will be lost (e.g. "this erases NVS: WiFi provisioning + calibration") and the smaller alternative, then wait.
 
