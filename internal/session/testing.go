@@ -41,25 +41,64 @@ func SetIsUSBPortFn(fn func(string) bool) func(string) bool {
 	return prev
 }
 
-// SetWaitForPortInterval sets the wait interval and returns the previous value.
+// SetWaitForPortInterval atomically sets the wait interval and returns the
+// previous value. Race-free against concurrent reads from an in-flight
+// expireSession goroutine (BR-63) — see waitForPortIntervalNanos in
+// session.go.
 func SetWaitForPortInterval(d time.Duration) time.Duration {
-	prev := waitForPortInterval
-	waitForPortInterval = d
-	return prev
+	return time.Duration(waitForPortIntervalNanos.Swap(int64(d)))
 }
 
-// SetDeferredRestartTimeout sets the deferred restart timeout and returns the previous value.
+// SetDeferredRestartTimeout atomically sets the deferred restart timeout and
+// returns the previous value. See SetWaitForPortInterval.
 func SetDeferredRestartTimeout(d time.Duration) time.Duration {
-	prev := deferredRestartTimeout
-	deferredRestartTimeout = d
-	return prev
+	return time.Duration(deferredRestartTimeoutNanos.Swap(int64(d)))
 }
 
-// SetSyncRetryDelay sets the sync retry delay and returns the previous value.
+// DeferredRestartTimeout returns the current deferred-restart duration.
+// Exported so callers outside this package (e.g. a downstream hardware-bench
+// harness) can read the value without the side-effecting SetDeferredRestartTimeout
+// round-trip; it simply wraps the internal atomic accessor.
+func DeferredRestartTimeout() time.Duration {
+	return deferredRestartTimeout()
+}
+
+// SetSyncRetryDelay atomically sets the sync retry delay and returns the
+// previous value. See SetWaitForPortInterval.
 func SetSyncRetryDelay(d time.Duration) time.Duration {
-	prev := syncRetryDelay
-	syncRetryDelay = d
-	return prev
+	return time.Duration(syncRetryDelayNanos.Swap(int64(d)))
+}
+
+// WaitForExpireSessions blocks until every deferred-restart timer callback
+// (ReleaseFlasherDeferred's expireSession goroutines) that was outstanding
+// at the moment of this call has finished. It joins via the expireTimers
+// registry (session.go) rather than scanning the ports map: expireSession
+// can delete(ports, port) on its failure/never-re-enumerate path before its
+// callback closes its done channel, which would make that goroutine
+// invisible to a ports-map scan and let it keep running past this call
+// (BR-63 delete-path fix) — the registry tracks "goroutine still possibly
+// running" independent of ports membership. A session whose timer was
+// successfully stopped before firing (see stopSessionTimerLocked) or that
+// was never scheduled via ReleaseFlasherDeferred was already unregistered
+// (or never registered) and has nothing to wait for. The registry is
+// snapshotted and its lock released before blocking on any channel, and
+// this never holds portsMu while waiting, so it can't deadlock against a
+// callback that needs portsMu to finish and close its channel. Call in test
+// cleanup, ideally after best-effort stopping timers, to guarantee no
+// callback outlives the test that scheduled it — without this, a callback
+// that fires right at test teardown can keep running into the next test,
+// racing that test's mutation of the injectable timer values above and
+// mutating stale session/ports state (BR-63).
+func WaitForExpireSessions() {
+	expireTimersMu.Lock()
+	pending := make([]chan struct{}, 0, len(expireTimers))
+	for done := range expireTimers {
+		pending = append(pending, done)
+	}
+	expireTimersMu.Unlock()
+	for _, done := range pending {
+		<-done
+	}
 }
 
 // SetPorts replaces the ports map and returns the previous value. NOT thread-safe — call only from test setup.
