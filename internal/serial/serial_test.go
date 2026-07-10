@@ -949,15 +949,23 @@ func TestReconnectingStateVisibility(t *testing.T) {
 
 	var openCount int32
 	reconnectStarted := make(chan struct{})
+	// allowFirstError gates delivery of the transient read error until the
+	// test has made its "not reconnecting initially" assertion. Without this
+	// gate, the readLoop goroutine (spawned inside Start) can race ahead and
+	// flip reconnecting=true before the assertion below runs, making the
+	// test order-fragile under CPU contention (BR-74).
+	allowFirstError := make(chan struct{})
 	sm.OpenFunc = func(name string, mode *serial.Mode) (serial.Port, error) {
 		count := atomic.AddInt32(&openCount, 1)
 		if count == 1 {
-			// First open — signal and return port that errors
+			// First open — wait for the test's go-ahead, then signal and
+			// return a port that errors.
 			return &mockPort{
 				readFn: func(p []byte) (n int, err error) {
 					once := &sync.Once{}
 					var errOut error
 					once.Do(func() {
+						<-allowFirstError
 						close(reconnectStarted)
 						errOut = fmt.Errorf("bad file descriptor")
 					})
@@ -982,8 +990,12 @@ func TestReconnectingStateVisibility(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = sm.Stop() }()
 
-	// Initially not reconnecting
+	// Initially not reconnecting. Deterministic: the readLoop goroutine is
+	// blocked on allowFirstError and cannot have flipped reconnecting yet.
 	assert.False(t, sm.IsReconnecting(), "should not be reconnecting initially")
+
+	// Let the transient error through now that the initial assertion is done.
+	close(allowFirstError)
 
 	// Wait for reconnect to start
 	<-reconnectStarted
