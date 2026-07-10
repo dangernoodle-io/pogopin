@@ -38,6 +38,25 @@ func nvsEntryMap(entries []nvs.Entry) map[nvsEntryKey]nvs.Entry {
 	return m
 }
 
+// nvsEntriesByNSKey indexes entries by (namespace, key) only, ignoring
+// ChunkIndex, preserving the order entries appear in the source slice. Used
+// by the namespace+key lookups below instead of ranging a map keyed by the
+// full (namespace, key, chunk) identity — map iteration order is randomized
+// per Go's spec, which would make which chunk of a multi-chunk key gets
+// matched (and therefore which coverage branches run) nondeterministic
+// between runs. A slice-backed, insertion-ordered index keeps the match
+// deterministic (first entry in source order wins, matching prior behavior
+// on every partition observed in practice, where a given namespace+key pairs
+// with a single chunk).
+func nvsEntriesByNSKey(entries []nvs.Entry) map[string][]nvs.Entry {
+	m := make(map[string][]nvs.Entry, len(entries))
+	for _, e := range entries {
+		k := e.Namespace + "\x00" + e.Key
+		m[k] = append(m[k], e)
+	}
+	return m
+}
+
 // espCRC32 matches the fork's unexported nvs.espCRC32 (ESP-IDF's page/entry
 // CRC): CRC-32/IEEE seeded with 0xFFFFFFFF instead of the usual 0.
 func espCRC32(data []byte) uint32 {
@@ -231,6 +250,7 @@ func verifyLosslessParse(raw []byte, entries []nvs.Entry) error {
 // Returns the number of verified updates on success.
 func verifySetApplied(pre, post []nvs.Entry, updates []NVSUpdate) (int, error) {
 	postMap := nvsEntryMap(post)
+	postByNSKey := nvsEntriesByNSKey(post)
 
 	touched := make(map[string]bool, len(updates))
 	for _, u := range updates {
@@ -239,19 +259,13 @@ func verifySetApplied(pre, post []nvs.Entry, updates []NVSUpdate) (int, error) {
 
 	applied := 0
 	for _, u := range updates {
-		matched := false
-		for k, e := range postMap {
-			if k.Namespace != u.Namespace || k.Key != u.Key {
-				continue
-			}
-			matched = true
-			if !reflect.DeepEqual(e.Value, u.Value) {
-				return 0, fmt.Errorf("post-write verify: %s.%s value mismatch after write (want %#v, got %#v)", u.Namespace, u.Key, u.Value, e.Value)
-			}
-			break
-		}
-		if !matched {
+		candidates := postByNSKey[u.Namespace+"\x00"+u.Key]
+		if len(candidates) == 0 {
 			return 0, fmt.Errorf("post-write verify: %s.%s not present after write", u.Namespace, u.Key)
+		}
+		e := candidates[0]
+		if !reflect.DeepEqual(e.Value, u.Value) {
+			return 0, fmt.Errorf("post-write verify: %s.%s value mismatch after write (want %#v, got %#v)", u.Namespace, u.Key, u.Value, e.Value)
 		}
 		applied++
 	}
