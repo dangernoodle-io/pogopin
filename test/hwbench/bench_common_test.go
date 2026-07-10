@@ -472,3 +472,97 @@ func runGPIOScenarios(t *testing.T, h *harness) {
 		assert.GreaterOrEqual(t, len(h.progressFor(tok)), 1, "esp_gpio_sweep emitted no notifications/progress")
 	})
 }
+
+// runSerialMonitorScenarios exercises serial_start/read/write/stop against
+// internal/mockhw's virtual monitor port (BR-66 PR2) — hardware-free,
+// through the same real MCP stdio wire protocol runGPIOScenarios uses. Only
+// called by TestMockBench: there is no serial-monitor equivalent in
+// TestHWBench today, since the real-hardware bench doesn't drive a boot
+// banner it can assert against.
+func runSerialMonitorScenarios(t *testing.T, h *harness) {
+	// serialReadTextContaining polls serial_read until want appears or the
+	// timeout elapses, guarding against the inherent goroutine-scheduling
+	// race between starting/writing the port and the manager's readLoop
+	// goroutine draining the virtual monitor port's outbound queue.
+	serialReadTextContaining := func(t *testing.T, want string) string {
+		t.Helper()
+		var text string
+		require.Eventually(t, func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			res, _, err := h.callTool(ctx, "serial_read", map[string]any{
+				"port": h.port,
+			})
+			if err != nil || res == nil || res.IsError {
+				return false
+			}
+			text = resultText(res)
+			return strings.Contains(text, want)
+		}, 2*time.Second, 10*time.Millisecond, "serial_read never observed %q", want)
+		return text
+	}
+
+	t.Run("serial_start_then_status_running", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, _, err := h.callTool(ctx, "serial_start", map[string]any{
+			"port": h.port,
+		})
+		require.NoError(t, err, "serial_start")
+		require.False(t, res.IsError, "serial_start returned error: %s", resultText(res))
+
+		res, _, err = h.callTool(ctx, "serial_status", map[string]any{
+			"port": h.port,
+		})
+		require.NoError(t, err, "serial_status")
+		require.False(t, res.IsError, "serial_status returned error: %s", resultText(res))
+
+		var status struct {
+			Running bool `json:"running"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resultText(res)), &status), "parse serial_status result: %s", resultText(res))
+		assert.True(t, status.Running, "serial_status reports not running after serial_start")
+	})
+
+	t.Run("serial_read_returns_boot_banner", func(t *testing.T) {
+		serialReadTextContaining(t, "mock-esp32: virtual chip ready")
+	})
+
+	t.Run("serial_write_then_read_loopback", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, _, err := h.callTool(ctx, "serial_write", map[string]any{
+			"port": h.port,
+			"data": "PING-hwbench-test",
+		})
+		require.NoError(t, err, "serial_write")
+		require.False(t, res.IsError, "serial_write returned error: %s", resultText(res))
+
+		serialReadTextContaining(t, "PING-hwbench-test")
+	})
+
+	t.Run("serial_stop_then_status_reports_not_open", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, _, err := h.callTool(ctx, "serial_stop", map[string]any{
+			"port": h.port,
+		})
+		require.NoError(t, err, "serial_stop")
+		require.False(t, res.IsError, "serial_stop returned error: %s", resultText(res))
+
+		// serial_stop tears the port session down entirely (session.StopSession
+		// removes it from the ports map), so a subsequent serial_status by
+		// name errors rather than reporting running=false -- there's no
+		// session left to report status for.
+		res, _, err = h.callTool(ctx, "serial_status", map[string]any{
+			"port": h.port,
+		})
+		require.NoError(t, err, "serial_status")
+		assert.True(t, res.IsError, "serial_status expected an error after serial_stop, got success: %s", resultText(res))
+		assert.Contains(t, resultText(res), "no serial port open",
+			"serial_status error does not mention the session is gone: %s", resultText(res))
+	})
+}
