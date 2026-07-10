@@ -54,6 +54,7 @@ var pogopinToolShortNames = map[string]bool{
 	"esp_register": true, "esp_reset": true, "esp_read_flash": true,
 	"esp_read_nvs": true, "esp_write_nvs": true, "esp_nvs_set": true,
 	"esp_nvs_delete": true, "flash_external": true, "decode_backtrace": true,
+	"esp_gpio_read": true, "esp_gpio_set": true, "esp_gpio_sweep": true,
 }
 
 // toolHonestyAllowlist documents agents whose prose backtick-references a
