@@ -22,6 +22,9 @@ type mockPort struct {
 	setModeErr     error
 	setReadTimeout bool
 	closeErr       error
+	// setReadTimeoutErr is test-only: when set, SetReadTimeout returns it
+	// instead of succeeding, used to exercise reconnect's dial-error path.
+	setReadTimeoutErr error
 }
 
 func (m *mockPort) SetMode(mode *serial.Mode) error {
@@ -35,6 +38,9 @@ func (m *mockPort) SetReadTimeout(t time.Duration) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.setReadTimeout = true
+	if m.setReadTimeoutErr != nil {
+		return m.setReadTimeoutErr
+	}
 	return nil
 }
 
@@ -1323,4 +1329,137 @@ func TestReadLoopNilPortSafe(t *testing.T) {
 
 	// No panic should have occurred; if we got here, the test passes
 	assert.True(t, true, "readLoop handled nil port safely")
+}
+
+// TestReconnectContextCancelledBeforeSleep verifies that reconnect() exits
+// immediately with false when ctx is already cancelled at the top of the
+// per-delay loop (the pre-sleep ctx.Done() check). An already-cancelled
+// context makes the select deterministic — the ctx.Done() case is always
+// ready, so this needs no goroutine or timing.
+func TestReconnectContextCancelledBeforeSleep(t *testing.T) {
+	sm := NewManager()
+	sm.portName = "test"
+	sm.baud = 115200
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	result := sm.reconnect(ctx, sm.gen)
+
+	assert.False(t, result, "reconnect() should return false when ctx is already cancelled")
+}
+
+// TestReconnectExitsOnGenMismatchDuringSleep verifies that reconnect() exits
+// with false when the generation counter changes while reconnect is sleeping
+// between attempts (the post-sleep, pre-dial gen check at ~serial.go:230-233).
+// The gen bump is injected synchronously via the beforeReconnectSleep test
+// seam, invoked inside reconnect's own goroutine immediately before the
+// sleep — so the post-sleep check deterministically observes the mismatch
+// on every run, with no timing dependence. The OpenFunc-not-called assertion
+// proves branch B was actually taken (exited before dialing), not that the
+// dial merely failed.
+func TestReconnectExitsOnGenMismatchDuringSleep(t *testing.T) {
+	origDelays := reconnectDelays
+	reconnectDelays = []time.Duration{time.Millisecond}
+	defer func() { reconnectDelays = origDelays }()
+
+	origHook := beforeReconnectSleep
+	defer func() { beforeReconnectSleep = origHook }()
+
+	sm := NewManager()
+	sm.portName = "test"
+	sm.baud = 115200
+
+	var openCalled atomic.Bool
+	sm.OpenFunc = func(portName string, mode *serial.Mode) (serial.Port, error) {
+		openCalled.Store(true)
+		return nil, fmt.Errorf("OpenFunc should never be called")
+	}
+
+	myGen := sm.gen
+	beforeReconnectSleep = func() {
+		sm.mu.Lock()
+		sm.gen++
+		sm.mu.Unlock()
+	}
+
+	result := sm.reconnect(context.Background(), myGen)
+
+	assert.False(t, result, "reconnect() should return false on gen mismatch during sleep")
+	assert.False(t, openCalled.Load(), "OpenFunc should not be called — reconnect must exit at the post-sleep gen check before dialing")
+}
+
+// TestReconnectSetReadTimeoutErrorContinues verifies that a dial whose
+// SetReadTimeout fails is closed and the loop continues to the next
+// reconnectDelays slot rather than returning early.
+func TestReconnectSetReadTimeoutErrorContinues(t *testing.T) {
+	orig := reconnectDelays
+	reconnectDelays = []time.Duration{time.Millisecond, time.Millisecond}
+	defer func() { reconnectDelays = orig }()
+
+	sm := NewManager()
+	sm.portName = "test"
+	sm.baud = 115200
+
+	var openCount atomic.Int32
+	var firstPort *mockPort
+	sm.OpenFunc = func(name string, mode *serial.Mode) (serial.Port, error) {
+		count := openCount.Add(1)
+		if count == 1 {
+			firstPort = &mockPort{setReadTimeoutErr: fmt.Errorf("set read timeout failed")}
+			return firstPort, nil
+		}
+		return &mockPort{
+			readFn: func(p []byte) (n int, err error) {
+				time.Sleep(time.Millisecond)
+				return 0, nil
+			},
+		}, nil
+	}
+
+	result := sm.reconnect(context.Background(), sm.gen)
+
+	assert.True(t, result, "reconnect() should succeed on the second dial")
+	require.NotNil(t, firstPort)
+	assert.True(t, firstPort.closeCalled, "port with a failing SetReadTimeout should be closed")
+	assert.Equal(t, int32(2), openCount.Load(), "reconnect() should have dialed twice")
+}
+
+// TestReconnectExitsOnGenMismatchAfterDial verifies that reconnect() closes
+// a just-opened port and returns false when the generation counter changed
+// between the dial and the post-dial gen check, without assigning the port
+// to sm.port. The OpenFunc bumps gen synchronously before returning, so this
+// is 100% reproducible — no timing involved.
+func TestReconnectExitsOnGenMismatchAfterDial(t *testing.T) {
+	orig := reconnectDelays
+	reconnectDelays = []time.Duration{time.Millisecond}
+	defer func() { reconnectDelays = orig }()
+
+	sm := NewManager()
+	sm.portName = "test"
+	sm.baud = 115200
+
+	var newPort *mockPort
+	sm.OpenFunc = func(name string, mode *serial.Mode) (serial.Port, error) {
+		sm.mu.Lock()
+		sm.gen++
+		sm.mu.Unlock()
+		newPort = &mockPort{
+			readFn: func(p []byte) (n int, err error) {
+				time.Sleep(time.Millisecond)
+				return 0, nil
+			},
+		}
+		return newPort, nil
+	}
+
+	myGen := sm.gen
+	result := sm.reconnect(context.Background(), myGen)
+
+	assert.False(t, result, "reconnect() should return false on gen mismatch after a successful dial")
+	require.NotNil(t, newPort)
+	assert.True(t, newPort.closeCalled, "the just-opened port should be closed on gen mismatch")
+	sm.mu.Lock()
+	assert.Nil(t, sm.port, "sm.port should not be assigned the stale-gen port")
+	sm.mu.Unlock()
 }

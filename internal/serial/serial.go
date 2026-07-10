@@ -19,6 +19,10 @@ var reconnectDelays = []time.Duration{
 	1600 * time.Millisecond,
 }
 
+// beforeReconnectSleep, when non-nil, is invoked inside reconnect just before each
+// backoff sleep. Test-only injection point; nil in production (no-op, zero cost).
+var beforeReconnectSleep func()
+
 type PortInfo struct {
 	Name string `json:"name"`
 }
@@ -218,6 +222,9 @@ func (sm *Manager) reconnect(ctx context.Context, myGen uint64) bool {
 		case <-ctx.Done():
 			return false
 		default:
+		}
+		if beforeReconnectSleep != nil {
+			beforeReconnectSleep()
 		}
 		time.Sleep(delay)
 		select {
