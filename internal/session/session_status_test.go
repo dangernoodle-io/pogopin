@@ -213,8 +213,13 @@ func TestAcquireForFlasher_WritesStatus(t *testing.T) {
 func TestReleaseFlasherDeferred_WritesStatus(t *testing.T) {
 	setupTestPorts(t)
 	statusPath := setupStatusFile(t)
-	setupFastDeferred(t)
-	setupFastWaitForPort(t)
+	// Deliberately does NOT use setupFastDeferred: this test checks status
+	// immediately after the call returns, and the real (multi-second)
+	// default deferredRestartTimeout guarantees the timer cannot possibly
+	// fire (flipping the status back to "reader") before that check runs,
+	// however loaded the scheduler is — unlike a fast (ms-scale) timeout,
+	// which can race this exact assertion under heavy parallel test load
+	// (BR-63). setupTestPorts' cleanup stops this real timer for us.
 
 	orig := newManagerFunc
 	defer func() { newManagerFunc = orig }()

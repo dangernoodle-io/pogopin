@@ -19,13 +19,12 @@ import (
 func setupTestPorts(t *testing.T) {
 	orig := ports
 	t.Cleanup(func() {
-		// Stop all timers and close cached flashers to prevent goroutine leaks
+		// Best-effort stop every session's pending timer (releases
+		// expireSessionWG's reservation when Stop() wins the race) and close
+		// cached flashers.
 		portsMu.Lock()
 		for _, sess := range ports {
-			if sess.timer != nil {
-				sess.timer.Stop()
-				sess.timer = nil
-			}
+			stopSessionTimerLocked(sess)
 			if sess.flasher != nil {
 				sess.flasher.Reset()
 				_ = sess.flasher.Close()
@@ -33,27 +32,30 @@ func setupTestPorts(t *testing.T) {
 			}
 		}
 		portsMu.Unlock()
+		// Join any timer callback that had already fired (or was actively
+		// running) when Stop() above returned false — guarantees no leaked
+		// expireSession goroutine from this test can survive into the next
+		// test and race its setup (BR-63). Must run before swapping ports
+		// back: the in-flight goroutine still touches the current map.
+		WaitForExpireSessions()
 		ports = orig
 	})
 	ports = map[string]*PortSession{}
 }
 
 func setupFastDeferred(t *testing.T) {
-	orig := deferredRestartTimeout
-	deferredRestartTimeout = 10 * time.Millisecond
-	t.Cleanup(func() { deferredRestartTimeout = orig })
+	orig := SetDeferredRestartTimeout(10 * time.Millisecond)
+	t.Cleanup(func() { SetDeferredRestartTimeout(orig) })
 }
 
 func setupFastWaitForPort(t *testing.T) {
-	orig := waitForPortInterval
-	waitForPortInterval = time.Millisecond
-	t.Cleanup(func() { waitForPortInterval = orig })
+	orig := SetWaitForPortInterval(time.Millisecond)
+	t.Cleanup(func() { SetWaitForPortInterval(orig) })
 }
 
 func setupFastSyncRetry(t *testing.T) {
-	orig := syncRetryDelay
-	syncRetryDelay = time.Millisecond
-	t.Cleanup(func() { syncRetryDelay = orig })
+	orig := SetSyncRetryDelay(time.Millisecond)
+	t.Cleanup(func() { SetSyncRetryDelay(orig) })
 }
 
 func setupTestManagersFunc(t *testing.T) {
@@ -877,8 +879,6 @@ func TestReleaseFlasherImmediateRestartsReader(t *testing.T) {
 
 func TestReleaseFlasherDeferredStartsTimer(t *testing.T) {
 	setupTestPorts(t)
-	setupFastDeferred(t)
-	setupFastWaitForPort(t)
 
 	mgr := serial.NewManager()
 	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
@@ -901,20 +901,87 @@ func TestReleaseFlasherDeferredStartsTimer(t *testing.T) {
 	ports[tmpfile.Name()] = sess
 	portsMu.Unlock()
 
+	// Deliberately does NOT use setupFastDeferred: this test only checks
+	// state immediately after the call returns, and the real (multi-second)
+	// default deferredRestartTimeout guarantees the timer cannot possibly
+	// fire before that check runs, however loaded the scheduler is. A fast
+	// (ms-scale) timeout can race this exact assertion under heavy parallel
+	// test load — that was BR-63's second flake, caught by `-race
+	// -count=20`: TestReleaseFlasherDeferredStartsTimer's own goroutine got
+	// descheduled long enough for the 10ms timer to fire and complete
+	// before the "still Pending" check ran, observing ModeReader instead.
+	// The eventual-fire-and-restart behavior (which does need a fast
+	// timeout to stay quick) is covered separately by
+	// TestModeTransitionReaderToFlasherToPendingToReader via the race-free
+	// WaitForExpireSessions join. setupTestPorts' cleanup stops this real
+	// timer for us.
 	ReleaseFlasherDeferred(sess, tmpfile.Name())
 
 	portsMu.Lock()
 	assert.Equal(t, ModePending, sess.mode)
 	assert.NotNil(t, sess.timer)
 	portsMu.Unlock()
+}
 
-	// Wait for timer to expire
-	time.Sleep(50 * time.Millisecond)
+// TestWaitForExpireSessionsJoinsDeletePath verifies the MEDIUM finding fix:
+// WaitForExpireSessions must join an expireSession goroutine that deletes
+// its own session from ports (mgr.Start failure, so expireSession's
+// "foundPort found but restart failed" -> "Could not restart, delete
+// session" branch runs) before closing its done channel -- not just
+// goroutines whose session is still present in ports at join time (BR-63
+// delete-path fix: the join now tracks outstanding callbacks via the
+// expireTimers registry, independent of ports map membership).
+//
+// Combined with setupStatusFile so the callback's status.Write reads the
+// package-global status.statusDir this test's t.Cleanup(status.SetStatusDir)
+// later mutates: under `go test -race`, if WaitForExpireSessions returned
+// before the callback's status.Write actually finished (the old
+// ports-map-scan bug, which finds nothing to wait on once the session is
+// already deleted), that in-flight read would race the cleanup's write and
+// the race detector would catch it. A clean `-race` run here is the proof
+// the join is real, not just that the delete-from-ports side effect landed.
+func TestWaitForExpireSessionsJoinsDeletePath(t *testing.T) {
+	setupTestPorts(t)
+	setupFastDeferred(t)
+	setupFastWaitForPort(t)
+	setupStatusFile(t)
 
-	// Session should have been restarted
+	// Port exists on disk so WaitForPort's os.Stat check finds it on its
+	// very first poll instead of blocking on expireSession's hardcoded 3s
+	// deadline -- keeps this test fast while still reaching the delete
+	// branch below (mgr.Start fails once the port is "found").
+	tmpfile, err := os.CreateTemp(t.TempDir(), "test-port-*")
+	require.NoError(t, err)
+	defer os.Remove(tmpfile.Name())
+	tmpfile.Close()
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return nil, fmt.Errorf("simulated open failure")
+	}
+
 	portsMu.Lock()
-	assert.Equal(t, ModeReader, sess.mode)
+	sess := &PortSession{
+		mgr:  mgr,
+		port: tmpfile.Name(),
+		baud: 115200,
+		mode: ModeFlasher,
+	}
+	ports[tmpfile.Name()] = sess
 	portsMu.Unlock()
+
+	ReleaseFlasherDeferred(sess, tmpfile.Name())
+
+	// Deterministically join the deferred callback. Must actually block
+	// until expireSession's delete-from-ports branch (and its status.Write)
+	// has finished, even though the session it deletes is no longer in
+	// ports by the time the callback's defer closes the channel.
+	WaitForExpireSessions()
+
+	portsMu.Lock()
+	_, stillPresent := ports[tmpfile.Name()]
+	portsMu.Unlock()
+	assert.False(t, stillPresent, "expireSession's delete-from-ports path should have removed the session")
 }
 
 // AcquireForExternal / ReleaseExternal tests
@@ -1110,14 +1177,19 @@ func TestModeTransitionReaderToFlasherToPendingToReader(t *testing.T) {
 	sess.flasher = mock
 	portsMu.Unlock()
 
-	// Transition to ModePending
+	// Transition to ModePending. Deliberately doesn't assert ModePending
+	// immediately after this call: with the fast (setupFastDeferred)
+	// timeout, that would race the real background timer under heavy
+	// parallel test load (BR-63) — see
+	// TestReleaseFlasherDeferredStartsTimer, which covers the immediate
+	// post-call Pending state without that race using the real (slow)
+	// default timeout instead. This test's job is the full
+	// Reader->Flasher->Pending->Reader round trip, verified deterministically
+	// below via WaitForExpireSessions.
 	ReleaseFlasherDeferred(sess, tmpfile.Name())
-	portsMu.Lock()
-	assert.Equal(t, ModePending, sess.mode)
-	portsMu.Unlock()
 
-	// Wait for deferred restart
-	time.Sleep(50 * time.Millisecond)
+	// Deterministically wait for the deferred restart's callback to finish.
+	WaitForExpireSessions()
 
 	// Should be back to ModeReader
 	portsMu.Lock()

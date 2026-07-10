@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"dangernoodle.io/pogopin/internal/esp"
@@ -43,6 +44,17 @@ type PortSession struct {
 	flasher esp.Flasher // cached flasher (only in ModeFlasher/ModePending)
 	timer   *time.Timer // deferred restart timer (only in ModePending)
 
+	// timerDone is non-nil exactly when timer was scheduled by
+	// ReleaseFlasherDeferred (nil for timers a test constructs directly,
+	// e.g. via time.AfterFunc). It is closed exactly once: either by
+	// stopSessionTimerLocked, when timer.Stop() successfully cancels it
+	// before firing (so the callback below will never run and must not be
+	// waited on), or by the callback itself when timer.Stop() loses the
+	// race (already fired or running) and it finishes. This lets
+	// WaitForExpireSessions deterministically wait for an in-flight
+	// expireSession goroutine instead of guessing with a sleep — see BR-63.
+	timerDone chan struct{}
+
 	// portsAtAcquire snapshots the set of system port names that existed at
 	// AcquireForFlasher time, before any reset-triggered re-enumeration. It
 	// lets FindSimilarPort tell a genuinely re-enumerated port (newly
@@ -65,12 +77,107 @@ func snapshotPortNames() map[string]bool {
 }
 
 var (
-	ports                  = map[string]*PortSession{}
-	portsMu                sync.Mutex
-	waitForPortInterval    = 50 * time.Millisecond
-	deferredRestartTimeout = 5 * time.Second
-	syncRetryDelay         = 1 * time.Second
+	ports   = map[string]*PortSession{}
+	portsMu sync.Mutex
 )
+
+// expireTimers tracks every deferred-restart timer callback (expireSession
+// goroutine) that ReleaseFlasherDeferred has scheduled and that has not yet
+// finished, independent of ports map membership. expireSession can
+// delete(ports, port) on its failure/never-re-enumerate path before the
+// callback's defer closes its done channel (session.go's expireSession,
+// "Could not restart, delete session" branch) — a join that only scans the
+// live ports map would then never observe that goroutine, letting it keep
+// running (and reading package globals like status.statusDir) past a test's
+// return, reintroducing the exact race BR-63 fixed. Guarded by its own
+// mutex, never portsMu, so registry bookkeeping (quick map add/remove) can
+// never be blocked behind — or block — a caller waiting on a channel a
+// callback needs to close. See registerExpireTimer / unregisterExpireTimer
+// and WaitForExpireSessions in testing.go.
+var (
+	expireTimersMu sync.Mutex
+	expireTimers   = map[chan struct{}]struct{}{}
+)
+
+// registerExpireTimer records done as an outstanding deferred-timer
+// completion channel. Called from the deferred-release path in prod too
+// (cheap map insert); harmless since nothing in prod ever reads the
+// registry — only WaitForExpireSessions (test-only) does.
+func registerExpireTimer(done chan struct{}) {
+	expireTimersMu.Lock()
+	expireTimers[done] = struct{}{}
+	expireTimersMu.Unlock()
+}
+
+// unregisterExpireTimer removes done from the outstanding-timer registry.
+// Called from exactly one of the two close sites for a given channel
+// (stopSessionTimerLocked when Stop() wins the race, or the
+// ReleaseFlasherDeferred callback when Stop() loses it) — every registered
+// channel is unregistered exactly once, so the registry never leaks.
+func unregisterExpireTimer(done chan struct{}) {
+	expireTimersMu.Lock()
+	delete(expireTimers, done)
+	expireTimersMu.Unlock()
+}
+
+// waitForPortIntervalNanos / deferredRestartTimeoutNanos / syncRetryDelayNanos
+// hold their durations as atomic nanosecond counts (default set in init())
+// rather than plain time.Duration package vars. Tests inject fast values for
+// these via testing.go's Set* helpers (session_test.go's setupFast*), and
+// production code reads them from goroutines spawned off request handlers
+// (WaitForPort's polling loop, retryFlasherCreate's retry sleep, and the
+// expireSession goroutine ReleaseFlasherDeferred launches via
+// time.AfterFunc). A plain time.Duration var read/written from those
+// goroutines concurrently with a test's setter is a genuine data race
+// (BR-63) — atomics make the read/write itself race-free. See
+// expireSessionWG below for the complementary fix: guaranteeing no such
+// goroutine is still running (and therefore reading these values) after the
+// test that spawned it has returned.
+var (
+	waitForPortIntervalNanos    atomic.Int64
+	deferredRestartTimeoutNanos atomic.Int64
+	syncRetryDelayNanos         atomic.Int64
+)
+
+func init() {
+	waitForPortIntervalNanos.Store(int64(50 * time.Millisecond))
+	deferredRestartTimeoutNanos.Store(int64(5 * time.Second))
+	syncRetryDelayNanos.Store(int64(1 * time.Second))
+}
+
+func waitForPortInterval() time.Duration    { return time.Duration(waitForPortIntervalNanos.Load()) }
+func deferredRestartTimeout() time.Duration { return time.Duration(deferredRestartTimeoutNanos.Load()) }
+func syncRetryDelay() time.Duration         { return time.Duration(syncRetryDelayNanos.Load()) }
+
+// stopSessionTimerLocked stops sess's pending deferred-restart timer, if
+// any. If the timer was scheduled by ReleaseFlasherDeferred (timerDone
+// non-nil) and Stop() successfully canceled it before it fired, the
+// callback is now guaranteed to never run — so timerDone is unregistered
+// from the expireTimers registry and closed here, since nothing else would.
+// If Stop() returns false, the callback already fired or is currently
+// running and will unregister/close timerDone itself when it finishes; the
+// registry (not sess/ports state) is what lets a caller join it
+// (WaitForExpireSessions in testing.go) to deterministically wait for that
+// in-flight callback instead of guessing with a sleep — no leaked goroutine
+// can then outlive its test and race a later test's setup (BR-63, confirmed
+// via `go test -race`). Either way, sess.timerDone is nilled below: the
+// callback closure captured the channel by its own local variable, not via
+// this field, so nilling it here is always safe and prevents a stale
+// (possibly still-open) closed-later channel from being reachable off sess
+// between teardown and the next deferred release. Timers a test constructs
+// directly (timerDone nil) are just stopped, as before. Caller must hold
+// portsMu.
+func stopSessionTimerLocked(sess *PortSession) {
+	if sess.timer == nil {
+		return
+	}
+	if sess.timer.Stop() && sess.timerDone != nil {
+		unregisterExpireTimer(sess.timerDone)
+		close(sess.timerDone)
+	}
+	sess.timer = nil
+	sess.timerDone = nil
+}
 
 // snapshotPorts builds a status.PortState slice from the current ports map.
 // Caller MUST hold portsMu.
@@ -137,7 +244,7 @@ func retryFlasherCreate(port string, opts *espflasher.FlasherOptions, sess *Port
 	// USB ports may need time after re-enumeration
 	if isUSBPortFn(port) {
 		for i := 0; i < 3; i++ {
-			time.Sleep(syncRetryDelay)
+			time.Sleep(syncRetryDelay())
 			f, err = newFlasherFactory(port, opts)
 			if err == nil {
 				return f, nil
@@ -209,11 +316,11 @@ func WaitForPort(port string, timeout time.Duration, knownPorts map[string]bool)
 		}
 
 		// Check timeout
-		if time.Now().Add(waitForPortInterval).After(deadline) {
+		if time.Now().Add(waitForPortInterval()).After(deadline) {
 			return ""
 		}
 
-		time.Sleep(waitForPortInterval)
+		time.Sleep(waitForPortInterval())
 	}
 }
 
@@ -264,10 +371,7 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 			_ = sess.mgr.Stop()
 			sess.mode = ModeFlasher
 		case ModePending:
-			if sess.timer != nil {
-				sess.timer.Stop()
-				sess.timer = nil
-			}
+			stopSessionTimerLocked(sess)
 			// Preserve cached flasher if any - it will be reused
 			sess.mode = ModeFlasher
 		}
@@ -428,7 +532,24 @@ func ReleaseFlasherDeferred(sess *PortSession, port string) {
 	}()
 
 	sess.mode = ModePending
-	sess.timer = time.AfterFunc(deferredRestartTimeout, func() {
+	// done is closed exactly once: by the callback below when it finishes
+	// (Stop() lost the race), or by stopSessionTimerLocked when Stop() wins
+	// the race and the callback will never run. Registered in expireTimers
+	// immediately (before the timer can possibly fire) so WaitForExpireSessions
+	// can find and join it via the registry regardless of whether
+	// expireSession later deletes this session from ports on its
+	// failure/never-re-enumerate path (BR-63 delete-path fix) — the join no
+	// longer depends on ports map membership. Assigning done to
+	// sess.timerDone too (as before) preserves stopSessionTimerLocked's
+	// "was this timer scheduled by ReleaseFlasherDeferred" check.
+	done := make(chan struct{})
+	sess.timerDone = done
+	registerExpireTimer(done)
+	sess.timer = time.AfterFunc(deferredRestartTimeout(), func() {
+		defer func() {
+			unregisterExpireTimer(done)
+			close(done)
+		}()
 		expireSession(sess, port)
 	})
 }
@@ -505,10 +626,7 @@ func AcquireForExternal(port string) *PortSession {
 		case ModeReader:
 			_ = sess.mgr.Stop()
 		case ModePending:
-			if sess.timer != nil {
-				sess.timer.Stop()
-				sess.timer = nil
-			}
+			stopSessionTimerLocked(sess)
 		}
 	} else {
 		sess = &PortSession{
@@ -610,10 +728,7 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 
 	// Handle pending/deferred restart
 	if sess.mode == ModePending {
-		if sess.timer != nil {
-			sess.timer.Stop()
-			sess.timer = nil
-		}
+		stopSessionTimerLocked(sess)
 		// Close cached flasher if any
 		if sess.flasher != nil {
 			sess.flasher.Reset()
@@ -664,10 +779,7 @@ func StartSession(port string, baud int, bufSize int) error {
 	sess, exists := ports[port]
 	if exists {
 		// Cancel pending timer if any
-		if sess.timer != nil {
-			sess.timer.Stop()
-			sess.timer = nil
-		}
+		stopSessionTimerLocked(sess)
 		// Close cached flasher if any
 		if sess.flasher != nil {
 			sess.flasher.Reset()
@@ -696,10 +808,7 @@ func StartSession(port string, baud int, bufSize int) error {
 // hold portsMu. Shared by StopSession and RestartSession.
 func teardownSessionLocked(sess *PortSession, port string) {
 	// Cancel pending timer if any
-	if sess.timer != nil {
-		sess.timer.Stop()
-		sess.timer = nil
-	}
+	stopSessionTimerLocked(sess)
 
 	// Close cached flasher if any
 	if sess.flasher != nil {
@@ -781,10 +890,7 @@ func CleanupAllSessions() {
 	}()
 
 	for port, sess := range ports {
-		if sess.timer != nil {
-			sess.timer.Stop()
-			sess.timer = nil
-		}
+		stopSessionTimerLocked(sess)
 		if sess.flasher != nil {
 			sess.flasher.Reset()
 			_ = sess.flasher.Close()
