@@ -62,7 +62,8 @@ func TestRegisterHardwareToolsRegistersFullTier(t *testing.T) {
 	for _, n := range []string{
 		"esp_flash", "esp_erase", "esp_info", "esp_register", "esp_reset",
 		"esp_read_flash", "esp_read_nvs", "esp_write_nvs", "esp_nvs_set",
-		"esp_nvs_delete", "flash_external",
+		"esp_nvs_delete", "esp_gpio_read", "esp_gpio_set", "esp_gpio_sweep",
+		"flash_external",
 	} {
 		assert.True(t, names[n], "expected %s to be registered", n)
 	}

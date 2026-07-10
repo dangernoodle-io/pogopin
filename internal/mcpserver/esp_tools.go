@@ -114,4 +114,36 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
 	s.AddTool(espNVSDeleteTool, withRecover(handleNVSDelete))
+
+	espGPIOReadTool := mcp.NewTool("esp_gpio_read",
+		mcp.WithDescription("Read the current level of a single ESP GPIO pin directly against the ROM/stub bootloader's memory-mapped GPIO registers — no firmware needs to be running. Returns {pin, level}. The chip is held in download mode after this call (no reset) so repeated probes across calls reuse the same connection and don't perturb pin state; it auto-returns to normal serial_start monitoring after ~5s of inactivity."),
+		mcp.WithString("port", mcp.Required(), mcp.Description("Serial port")),
+		mcp.WithNumber("pin", mcp.Required(), mcp.Description("GPIO pin number")),
+		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
+		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
+	)
+	s.AddTool(espGPIOReadTool, withRecover(handleGPIORead))
+
+	espGPIOSetTool := mcp.NewTool("esp_gpio_set",
+		mcp.WithDescription("Drive a single ESP GPIO pin high or low directly against the ROM/stub bootloader — no firmware needs to be running. level accepts true/false or 1/0. Refuses reserved pins (flash/PSRAM, strapping, UART0, USB-JTAG) by default — pass include_reserved=true to override. Always refuses input-only/nonexistent pins regardless of include_reserved (the underlying error is surfaced verbatim). The chip is held in download mode after this call (no reset), same no-reset hold as esp_gpio_read/esp_gpio_sweep, so the driven level persists across subsequent calls until the ~5s idle timeout returns the port to normal monitoring."),
+		mcp.WithString("port", mcp.Required(), mcp.Description("Serial port")),
+		mcp.WithNumber("pin", mcp.Required(), mcp.Description("GPIO pin number")),
+		mcp.WithBoolean("level", mcp.Required(), mcp.Description("Level to drive: true/1 for high, false/0 for low")),
+		mcp.WithBoolean("include_reserved", mcp.Description("Drive pins normally refused as reserved (flash/PSRAM, strapping, UART0, USB-JTAG) (default false)")),
+		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
+		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
+	)
+	s.AddTool(espGPIOSetTool, withRecover(handleGPIOSet))
+
+	espGPIOSweepTool := mcp.NewTool("esp_gpio_sweep",
+		mcp.WithDescription("Sweep a set of ESP GPIO pins over a single connection, driving each in turn and dwelling on each polarity — useful for finding which pin drives an unlabeled LED/relay without reflashing. pins is a comma-separated list and/or inclusive ranges (e.g. \"4,16,17\" or \"0-21\"); omit or empty to sweep every drivable (non-reserved) pin the detected chip exposes. Reserved pins (flash/PSRAM, strapping, UART0, USB-JTAG, input-only) are skipped by default — pass include_reserved=true to force them. Returns {pins: [{pin, skipped, reason}]}. Emits MCP progress notifications per pin. The chip is held in download mode after this call (no reset), same no-reset hold as esp_gpio_read/esp_gpio_set."),
+		mcp.WithString("port", mcp.Required(), mcp.Description("Serial port")),
+		mcp.WithString("pins", mcp.Description("Comma-separated pin list and/or ranges, e.g. \"4,16,17\" or \"0-21\" (omit/empty for every drivable pin)")),
+		mcp.WithNumber("dwell", mcp.Description("Seconds to hold each polarity before advancing (default 5)")),
+		mcp.WithBoolean("both", mcp.Description("Drive each pin both high and low (default true)")),
+		mcp.WithBoolean("include_reserved", mcp.Description("Sweep pins normally skipped as reserved (flash/PSRAM, strapping, UART0, USB-JTAG, input-only) (default false)")),
+		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
+		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
+	)
+	s.AddTool(espGPIOSweepTool, withRecover(handleGPIOSweep))
 }

@@ -33,11 +33,6 @@ const (
 	StatusPhaseWriting               = "writing"
 	StatusPhaseReadingBack           = "reading back"
 	StatusPhaseVerifying             = "verifying"
-	// StatusPhaseComputingHash is emitted around GetFlashMD5's opaque hash
-	// computation. GetFlashMD5 itself has no byte-progress hook yet (a later
-	// phase adds one upstream) so this is a coarse before/after marker, not a
-	// bar.
-	StatusPhaseComputingHash = "computing hash"
 	// StatusPhaseResetting is emitted by ResetESP immediately before the
 	// actual chip reset.
 	StatusPhaseResetting = "resetting"
@@ -93,8 +88,12 @@ type Flasher interface {
 	Close() error
 	ReadRegister(address uint32) (uint32, error)
 	WriteRegister(address, value uint32) error
+	ReadGPIO(pin int) (bool, error)
+	SetGPIO(pin int, level bool) error
+	ReleaseGPIO(pin int) error
+	GPIOReserved(pin int) (bool, string)
 	GetSecurityInfo() (*espflasher.SecurityInfo, error)
-	GetFlashMD5(offset, size uint32) (string, error)
+	GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error)
 	ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error)
 	FlushInput()
 }
@@ -490,13 +489,12 @@ func GetSecurityInfo(factory FlasherFactory, port string, baudRate int, resetMod
 	}, nil
 }
 
-// GetFlashMD5 computes the MD5 hash of a flash region. status, if non-nil,
-// receives a coarse "computing hash" tick before the (currently
-// progress-less) hash computation and a "complete" tick after it succeeds.
-// f.GetFlashMD5 has no byte-progress hook yet — a later phase adds one
-// upstream and threads it through here — so these are before/after markers,
-// not a bar.
-func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string, status StatusFunc) (FlashMD5Result, error) {
+// GetFlashMD5 computes the MD5 hash of a flash region. progress, if non-nil,
+// is forwarded to the fork's opt-in GetFlashMD5 ETA callback, which ticks a
+// synthetic elapsed/estimated-ms bar for the duration of the (device-silent)
+// hash computation and a final completion tick when it lands. Pass nil to opt
+// out entirely.
+func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string, progress espflasher.ProgressFunc) (FlashMD5Result, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -513,12 +511,10 @@ func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudR
 		_ = f.Close()
 	}()
 
-	emitStatus(status, StatusPhaseComputingHash)
-	md5, err := f.GetFlashMD5(offset, size)
+	md5, err := f.GetFlashMD5(offset, size, progress)
 	if err != nil {
 		return FlashMD5Result{}, err
 	}
-	emitStatus(status, StatusPhaseComplete)
 
 	return FlashMD5Result{
 		Offset: offset,

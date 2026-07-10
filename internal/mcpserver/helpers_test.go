@@ -109,6 +109,26 @@ type mockFlasher struct {
 	flashImagesProgress func(progress espflasher.ProgressFunc)
 	eraseFlashProgress  func(progress espflasher.ProgressFunc)
 	readFlashProgress   func(progress espflasher.ProgressFunc)
+	flashMD5Progress    func(progress espflasher.ProgressFunc)
+
+	// GPIO fields. readGPIOVal/readGPIOErr drive ReadGPIO's return.
+	// setGPIOErr, when set, is returned by every SetGPIO call (e.g. to
+	// simulate a reserved/input-only pin refusal); setGPIOCalls records
+	// every call for assertions. releaseGPIOCalls records every
+	// ReleaseGPIO call. gpioReservedFunc, when non-nil, backs GPIOReserved;
+	// otherwise every pin reports not-reserved.
+	readGPIOVal      bool
+	readGPIOErr      error
+	setGPIOErr       error
+	setGPIOCalls     []mockGPIOCall
+	releaseGPIOCalls []int
+	gpioReservedFunc func(pin int) (bool, string)
+}
+
+// mockGPIOCall records a single SetGPIO invocation on mockFlasher.
+type mockGPIOCall struct {
+	pin   int
+	level bool
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -174,7 +194,10 @@ func (m *mockFlasher) GetSecurityInfo() (*espflasher.SecurityInfo, error) {
 	return m.getSecurityInfoVal, m.getSecurityInfoErr
 }
 
-func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
+func (m *mockFlasher) GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error) {
+	if m.flashMD5Progress != nil {
+		m.flashMD5Progress(progress)
+	}
 	return m.flashMD5Val, m.flashMD5Err
 }
 
@@ -202,6 +225,27 @@ func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.Progres
 }
 
 func (m *mockFlasher) FlushInput() {
+}
+
+func (m *mockFlasher) ReadGPIO(pin int) (bool, error) {
+	return m.readGPIOVal, m.readGPIOErr
+}
+
+func (m *mockFlasher) SetGPIO(pin int, level bool) error {
+	m.setGPIOCalls = append(m.setGPIOCalls, mockGPIOCall{pin: pin, level: level})
+	return m.setGPIOErr
+}
+
+func (m *mockFlasher) ReleaseGPIO(pin int) error {
+	m.releaseGPIOCalls = append(m.releaseGPIOCalls, pin)
+	return nil
+}
+
+func (m *mockFlasher) GPIOReserved(pin int) (bool, string) {
+	if m.gpioReservedFunc != nil {
+		return m.gpioReservedFunc(pin)
+	}
+	return false, ""
 }
 
 // mockESPFlasher is a simplified flasher that tracks only resetCalled.
@@ -257,7 +301,7 @@ func (m *mockESPFlasher) GetSecurityInfo() (*espflasher.SecurityInfo, error) {
 	return &espflasher.SecurityInfo{}, nil
 }
 
-func (m *mockESPFlasher) GetFlashMD5(offset, size uint32) (string, error) {
+func (m *mockESPFlasher) GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error) {
 	return "", nil
 }
 
@@ -266,6 +310,22 @@ func (m *mockESPFlasher) ReadFlash(offset, size uint32, progress espflasher.Prog
 }
 
 func (m *mockESPFlasher) FlushInput() {
+}
+
+func (m *mockESPFlasher) ReadGPIO(pin int) (bool, error) {
+	return false, nil
+}
+
+func (m *mockESPFlasher) SetGPIO(pin int, level bool) error {
+	return nil
+}
+
+func (m *mockESPFlasher) ReleaseGPIO(pin int) error {
+	return nil
+}
+
+func (m *mockESPFlasher) GPIOReserved(pin int) (bool, string) {
+	return false, ""
 }
 
 // setupTestPorts sets up an empty ports map for testing.

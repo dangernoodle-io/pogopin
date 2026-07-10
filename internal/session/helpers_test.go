@@ -147,7 +147,7 @@ func (m *mockFlasher) GetSecurityInfo() (*espflasher.SecurityInfo, error) {
 	return m.getSecurityInfoVal, m.getSecurityInfoErr
 }
 
-func (m *mockFlasher) GetFlashMD5(offset, size uint32) (string, error) {
+func (m *mockFlasher) GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error) {
 	return m.flashMD5Val, m.flashMD5Err
 }
 
@@ -156,3 +156,19 @@ func (m *mockFlasher) ReadFlash(offset, size uint32, progress espflasher.Progres
 }
 
 func (m *mockFlasher) FlushInput() {}
+
+func (m *mockFlasher) ReadGPIO(pin int) (bool, error) {
+	return false, nil
+}
+
+func (m *mockFlasher) SetGPIO(pin int, level bool) error {
+	return nil
+}
+
+func (m *mockFlasher) ReleaseGPIO(pin int) error {
+	return nil
+}
+
+func (m *mockFlasher) GPIOReserved(pin int) (bool, string) {
+	return false, ""
+}

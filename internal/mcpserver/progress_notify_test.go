@@ -385,17 +385,24 @@ func TestHandleReadFlashNoProgressTokenEmitsNoNotifications(t *testing.T) {
 	assert.Empty(t, frames, "no progressToken supplied -> zero progress notifications")
 }
 
-// TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers verifies the md5
-// branch (Phase 2) emits its coarse computing-hash -> complete sequential
-// markers even though f.GetFlashMD5 has no chunked byte-progress seam yet
-// (a later phase adds one upstream) -- every tool emits at least a
-// start/phase/completion signal per the plan, never true silence.
-func TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers(t *testing.T) {
+// TestHandleReadFlashMD5ModeEmitsRealProgress verifies the md5 branch
+// (Phase 3c) drives a real ETA bar: the fork's GetFlashMD5 ProgressFunc ticks
+// synthetic elapsed/estimated-ms progress for the device-silent hash
+// computation, and the handler forwards each tick to the MCP emitter under a
+// fixed "computing hash" label -- a genuine byte/ETA bar, not the coarse
+// 2-step marker of Phase 2. The mock stands in for the fork's ticker by
+// driving the handed-down progress callback directly.
+func TestHandleReadFlashMD5ModeEmitsRealProgress(t *testing.T) {
 	setupTestPorts(t)
 	setupTestFlasherFactory(t)
 
 	flasher := &mockFlasher{
 		flashMD5Val: "5d41402abc4b2a76b9719d911017c592",
+		flashMD5Progress: func(progress espflasher.ProgressFunc) {
+			// Simulate the fork's synthetic ETA ticker: elapsed/estimated ms.
+			progress(500, 1000)
+			progress(1000, 1000)
+		},
 	}
 	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
 		return flasher, nil
@@ -416,9 +423,13 @@ func TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers(t *testing.T) {
 	requireToolCallOK(t, msg)
 
 	frames := progressFrames(t, sess.ch)
-	require.Len(t, frames, 2, "md5 mode emits the 2-step computing-hash -> complete sequence, not a byte bar")
+	require.Len(t, frames, 2, "md5 mode forwards each real ETA tick, not a fixed 2-step marker")
 	assert.Equal(t, "computing hash", frames[0]["message"])
-	assert.Equal(t, "complete", frames[1]["message"])
+	assert.EqualValues(t, 500, frames[0]["progress"])
+	assert.EqualValues(t, 1000, frames[0]["total"])
+	assert.Equal(t, "computing hash", frames[1]["message"])
+	assert.EqualValues(t, 1000, frames[1]["progress"])
+	assert.EqualValues(t, 1000, frames[1]["total"])
 }
 
 // TestHandleFlashExternalEmitsExactPhaseSequence pins flash_external's
@@ -426,9 +437,8 @@ func TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers(t *testing.T) {
 // path: stopping port / running command / restarting (inside flash.Flash)
 // then capturing boot / complete (handleSerialFlash, after Flash returns).
 // This is the handler-level counterpart to flash's own
-// TestFlashStatusPhaseSequence (which only covers the first three ticks)
-// and mirrors TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers's
-// pattern for esp_read_flash's md5 branch. A drift in either Flash()'s
+// TestFlashStatusPhaseSequence (which only covers the first three ticks).
+// A drift in either Flash()'s
 // ticks or the handler's own two ticks -- or in flashExternalStepsTotal --
 // breaks this test instead of newSequentialStatusEmitter silently
 // under/over-counting.
@@ -502,6 +512,72 @@ func TestHandleEraseNoProgressTokenEmitsNoNotifications(t *testing.T) {
 	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_erase", args, nil))
 	requireToolCallOK(t, msg)
 	assert.True(t, flasher.eraseFlashCalled)
+
+	frames := progressFrames(t, sess.ch)
+	assert.Empty(t, frames, "no progressToken supplied -> zero progress notifications")
+}
+
+// TestHandleGPIOSweepEmitsRealProgressNotifications verifies esp_gpio_sweep's
+// gpioSweepStatusEmitter forwards SweepGPIO's own per-pin current/total ticks
+// straight through to real MCP progress notifications, unlike the discrete
+// (newSequentialStatusEmitter) or byte/ordinal-split (nvsStatusEmitter)
+// adapters used elsewhere.
+func TestHandleGPIOSweepEmitsRealProgressNotifications(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	flasher := &mockFlasher{}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return flasher, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("gpio-sweep-progress")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":  t.TempDir(),
+		"pins":  "4,5",
+		"dwell": float64(0.001),
+		"both":  false,
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_gpio_sweep", args, "tok-gpio-sweep"))
+	requireToolCallOK(t, msg)
+	require.Len(t, flasher.setGPIOCalls, 2)
+
+	frames := progressFrames(t, sess.ch)
+	require.NotEmpty(t, frames)
+	for _, f := range frames {
+		assert.Equal(t, "tok-gpio-sweep", f["progressToken"])
+		assert.EqualValues(t, 2, f["total"], "sweep total is the pin count")
+	}
+	lastFrame := frames[len(frames)-1]
+	assert.EqualValues(t, 2, lastFrame["progress"], "final frame reaches the last pin index")
+}
+
+func TestHandleGPIOSweepNoProgressTokenEmitsNoNotifications(t *testing.T) {
+	setupTestPorts(t)
+	setupTestFlasherFactory(t)
+
+	flasher := &mockFlasher{}
+	session.SetFlasherFactory(func(port string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		return flasher, nil
+	})
+	t.Cleanup(func() { session.SetFlasherFactory(esp.DefaultFlasherFactory) })
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("gpio-sweep-no-token")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":  t.TempDir(),
+		"pins":  "4",
+		"dwell": float64(0.001),
+		"both":  false,
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "esp_gpio_sweep", args, nil))
+	requireToolCallOK(t, msg)
 
 	frames := progressFrames(t, sess.ch)
 	assert.Empty(t, frames, "no progressToken supplied -> zero progress notifications")

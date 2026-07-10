@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"dangernoodle.io/pogopin/internal/esp"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
@@ -157,6 +158,22 @@ func newSequentialStatusEmitter(emit func(current, total int, msg string), steps
 			step++
 		}
 		emit(step, stepsTotal, phase)
+	}
+}
+
+// gpioSweepStatusEmitter adapts an esp.StatusFunc directly onto a progress
+// emitter for esp_gpio_sweep. Unlike newSequentialStatusEmitter (purely
+// discrete phases with no byte/count denominator) and nvsStatusEmitter (byte
+// vs ordinal split), esp.SweepGPIO's own StatusFunc ticks already carry a
+// real current/total (pin index / total pin count) on every call — including
+// the initial "sweeping N drivable pins" tick fired when no pins were
+// requested — so this just forwards the three values straight through with
+// no adaptation needed. No esp.StatusPhase* constant is introduced here:
+// SweepGPIO's phase strings are freeform per-pin messages, not part of the
+// fixed vocabulary TestAllStatusPhasesClassified guards.
+func gpioSweepStatusEmitter(emit func(current, total int, msg string)) esp.StatusFunc {
+	return func(phase string, current, total int) {
+		emit(current, total, phase)
 	}
 }
 

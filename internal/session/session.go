@@ -45,15 +45,33 @@ type PortSession struct {
 	timer   *time.Timer // deferred restart timer (only in ModePending)
 
 	// timerDone is non-nil exactly when timer was scheduled by
-	// ReleaseFlasherDeferred (nil for timers a test constructs directly,
-	// e.g. via time.AfterFunc). It is closed exactly once: either by
-	// stopSessionTimerLocked, when timer.Stop() successfully cancels it
-	// before firing (so the callback below will never run and must not be
-	// waited on), or by the callback itself when timer.Stop() loses the
-	// race (already fired or running) and it finishes. This lets
+	// ReleaseFlasherDeferred/releaseFlasherDeferred (nil for timers a test
+	// constructs directly, e.g. via time.AfterFunc). It is closed exactly
+	// once: either by stopSessionTimerLocked, when timer.Stop() successfully
+	// cancels it before firing (so the callback below will never run and
+	// must not be waited on), or by the callback itself when timer.Stop()
+	// loses the race (already fired or running) and it finishes. This lets
 	// WaitForExpireSessions deterministically wait for an in-flight
 	// expireSession goroutine instead of guessing with a sleep — see BR-63.
 	timerDone chan struct{}
+
+	// flasherFP records the FlasherOptions fingerprint the cached flasher was
+	// built/reused with. AcquireForFlasher's factory compares it against a new
+	// caller's requested opts before reusing the cache — a mismatch (e.g. a
+	// different baud) invalidates the cache exactly like a failed liveness
+	// probe rather than silently reusing an incompatible connection. Zero
+	// value (unset) matches a zero-value request, so pre-existing test/prod
+	// sessions built without going through the factory are unaffected.
+	flasherFP flasherFingerprint
+
+	// noResetOnExpire, when true, tells expireSession to skip the underlying
+	// flasher.Reset() call before Close() when the deferred-restart timer
+	// fires. Set via ReleaseFlasherDeferredNoReset for callers that must not
+	// perturb device state (e.g. GPIO pin levels) on release. Always cleared
+	// by expireSession/closeCachedFlasher after use, and always explicitly
+	// set (true or false) on every ReleaseFlasherDeferred*/expiry cycle, so
+	// it can never leak into a later normal deferred release.
+	noResetOnExpire bool
 
 	// portsAtAcquire snapshots the set of system port names that existed at
 	// AcquireForFlasher time, before any reset-triggered re-enumeration. It
@@ -62,6 +80,30 @@ type PortSession struct {
 	// and merely shares a USB-serial name prefix. Nil for sessions not
 	// created via AcquireForFlasher.
 	portsAtAcquire map[string]bool
+}
+
+// flasherFingerprint captures the subset of espflasher.FlasherOptions that
+// must match for a cached flasher to be safely reused by AcquireForFlasher's
+// factory. ResetMode is intentionally excluded: it only governs the reset
+// sequence on connect/exit, which the reuse path skips entirely (no connect
+// happens when reusing a live BorrowedFlasher), so comparing it would force
+// needless reconnects with no correctness benefit.
+//
+// skipStub IS included: it is load-bearing. A cached flasher connected with
+// the stub loader uploaded (SkipStub=false) and one connected ROM-only
+// (SkipStub=true) are not interchangeable — reusing a stub-loaded handle for
+// a caller that requested SkipStub=true (or vice versa) resurrects the
+// magic-0x9 reconnect failure, since the two modes speak different
+// bootloader protocols over the same port.
+type flasherFingerprint struct {
+	baud     int
+	skipStub bool
+}
+
+// fingerprintForOpts derives a flasherFingerprint from the FlasherOptions a
+// caller is requesting a flasher with.
+func fingerprintForOpts(opts *espflasher.FlasherOptions) flasherFingerprint {
+	return flasherFingerprint{baud: opts.BaudRate, skipStub: opts.SkipStub}
 }
 
 // snapshotPortNames returns the current set of system port names, best-effort
@@ -82,18 +124,18 @@ var (
 )
 
 // expireTimers tracks every deferred-restart timer callback (expireSession
-// goroutine) that ReleaseFlasherDeferred has scheduled and that has not yet
+// goroutine) that releaseFlasherDeferred has scheduled and that has not yet
 // finished, independent of ports map membership. expireSession can
-// delete(ports, port) on its failure/never-re-enumerate path before the
-// callback's defer closes its done channel (session.go's expireSession,
-// "Could not restart, delete session" branch) — a join that only scans the
-// live ports map would then never observe that goroutine, letting it keep
-// running (and reading package globals like status.statusDir) past a test's
-// return, reintroducing the exact race BR-63 fixed. Guarded by its own
-// mutex, never portsMu, so registry bookkeeping (quick map add/remove) can
-// never be blocked behind — or block — a caller waiting on a channel a
-// callback needs to close. See registerExpireTimer / unregisterExpireTimer
-// and WaitForExpireSessions in testing.go.
+// delete(ports, port) on its failure/never-re-enumerate path (or the
+// no-reset-held early-return path) before the callback's defer closes its
+// done channel — a join that only scans the live ports map would then never
+// observe that goroutine, letting it keep running (and reading package
+// globals like status.statusDir) past a test's return, reintroducing the
+// exact race BR-63 fixed. Guarded by its own mutex, never portsMu, so
+// registry bookkeeping (quick map add/remove) can never be blocked behind —
+// or block — a caller waiting on a channel a callback needs to close. See
+// registerExpireTimer / unregisterExpireTimer and WaitForExpireSessions in
+// testing.go.
 var (
 	expireTimersMu sync.Mutex
 	expireTimers   = map[chan struct{}]struct{}{}
@@ -112,7 +154,7 @@ func registerExpireTimer(done chan struct{}) {
 // unregisterExpireTimer removes done from the outstanding-timer registry.
 // Called from exactly one of the two close sites for a given channel
 // (stopSessionTimerLocked when Stop() wins the race, or the
-// ReleaseFlasherDeferred callback when Stop() loses it) — every registered
+// releaseFlasherDeferred callback when Stop() loses it) — every registered
 // channel is unregistered exactly once, so the registry never leaks.
 func unregisterExpireTimer(done chan struct{}) {
 	expireTimersMu.Lock()
@@ -126,7 +168,7 @@ func unregisterExpireTimer(done chan struct{}) {
 // these via testing.go's Set* helpers (session_test.go's setupFast*), and
 // production code reads them from goroutines spawned off request handlers
 // (WaitForPort's polling loop, retryFlasherCreate's retry sleep, and the
-// expireSession goroutine ReleaseFlasherDeferred launches via
+// expireSession goroutine releaseFlasherDeferred launches via
 // time.AfterFunc). A plain time.Duration var read/written from those
 // goroutines concurrently with a test's setter is a genuine data race
 // (BR-63) — atomics make the read/write itself race-free. See
@@ -150,7 +192,7 @@ func deferredRestartTimeout() time.Duration { return time.Duration(deferredResta
 func syncRetryDelay() time.Duration         { return time.Duration(syncRetryDelayNanos.Load()) }
 
 // stopSessionTimerLocked stops sess's pending deferred-restart timer, if
-// any. If the timer was scheduled by ReleaseFlasherDeferred (timerDone
+// any. If the timer was scheduled by releaseFlasherDeferred (timerDone
 // non-nil) and Stop() successfully canceled it before it fired, the
 // callback is now guaranteed to never run — so timerDone is unregistered
 // from the expireTimers registry and closed here, since nothing else would.
@@ -220,6 +262,24 @@ func modeString(m PortMode) string {
 		return "pending"
 	}
 	return "unknown"
+}
+
+// closeCachedFlasher tears down sess.flasher (if any), honoring the
+// no-reset hold: while noResetOnExpire is armed, the chip is left in the
+// bootloader (Reset() is skipped), which is correct for every reap path —
+// the one place a device reset must still happen (serial_restart) does it
+// via DTR-on-reopen, not this flasher.Reset(). The hold is always consumed
+// (cleared) here so it can never leak into a later session. Caller MUST
+// hold portsMu; this helper does not acquire it.
+func closeCachedFlasher(sess *PortSession) {
+	if sess.flasher != nil {
+		if !sess.noResetOnExpire {
+			sess.flasher.Reset()
+		}
+		_ = sess.flasher.Close()
+		sess.flasher = nil
+	}
+	sess.noResetOnExpire = false
 }
 
 // retryFlasherCreate retries flasher creation on sync failure.
@@ -388,15 +448,24 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 	sess.portsAtAcquire = portNames
 
 	factory := func(portArg string, opts *espflasher.FlasherOptions) (esp.Flasher, error) {
+		requestedFP := fingerprintForOpts(opts)
+
 		// Read the cached flasher pointer under the lock, then probe/close it
 		// (serial I/O) without holding portsMu — other goroutines mutate
 		// sess.flasher under the same lock (e.g. BorrowedFlasher.onReturn).
 		portsMu.Lock()
 		cached := sess.flasher
+		cachedFP := sess.flasherFP
 		portsMu.Unlock()
 
+		// A fingerprint mismatch (e.g. a different requested baud) means the
+		// cached connection was set up for a different caller and must not be
+		// reused, regardless of liveness — skip the probe round trip entirely
+		// in that case and fall straight through to discard-and-recreate.
+		fpMismatch := cached != nil && cachedFP != requestedFP
+
 		var probeErr error
-		if cached != nil {
+		if cached != nil && !fpMismatch {
 			// Probe the cached flasher's connection before reusing it. If the
 			// board reset/re-enumerated since it was cached, the handle is
 			// dead and Reset()/register ops would silently no-op (BR-57).
@@ -419,7 +488,7 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 			}
 			portsMu.Unlock()
 
-			if cached != nil && probeErr != nil {
+			if cached != nil && (probeErr != nil || fpMismatch) {
 				_ = cached.Close()
 				cached = nil
 			}
@@ -436,6 +505,7 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 				onReturn: func(flasher esp.Flasher) {
 					portsMu.Lock()
 					sess.flasher = flasher
+					sess.flasherFP = requestedFP
 					portsMu.Unlock()
 				},
 			}, nil
@@ -461,6 +531,7 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 			onReturn: func(flasher esp.Flasher) {
 				portsMu.Lock()
 				sess.flasher = flasher
+				sess.flasherFP = requestedFP
 				portsMu.Unlock()
 			},
 		}, nil
@@ -473,15 +544,46 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 func expireSession(sess *PortSession, port string) {
 	portsMu.Lock()
 
+	// Capture the no-reset hold BEFORE closeCachedFlasher, which always
+	// clears it — the flag decides which of the two branches below runs.
+	held := sess.noResetOnExpire
+
 	// Reset and close cached flasher. The device is in bootloader/stub mode
 	// (BorrowedFlasher always caches via onReturn). Reset() returns it to
 	// user code. On USB CDC this triggers re-enumeration (1-3s), handled
-	// by the WaitForPort below.
-	if sess.flasher != nil {
-		sess.flasher.Reset()
-		_ = sess.flasher.Close()
-		sess.flasher = nil
+	// by the WaitForPort below. noResetOnExpire (set via
+	// ReleaseFlasherDeferredNoReset) skips the Reset() call — e.g. so a
+	// GPIO-owning caller's pin state isn't perturbed.
+	closeCachedFlasher(sess)
+
+	if held {
+		// HW-validated finding: restarting the serial monitor/reader here
+		// reopens the port. On native-USB chips (USB-Serial-JTAG) that
+		// reopen/cycle disturbs the ROM bootloader's download-mode state,
+		// breaking a subsequent no_reset GPIO reattach — proven on hardware
+		// by leaving the port genuinely closed/idle across the deferred
+		// window vs. letting the monitor restart touch it. So on a
+		// no-reset expiry we must NOT restart the reader; instead tear the
+		// session down exactly like AcquireForFlasher sees an absent one
+		// (deleted from the map, manager stopped) so the next
+		// AcquireForFlasher for this port builds a fresh flasher connection
+		// from scratch rather than reusing anything stale.
+		//
+		// Note: this early return does NOT itself close/unregister
+		// sess.timerDone — that happens unconditionally in the deferred
+		// func's own defer in releaseFlasherDeferred, which wraps this
+		// entire call. Every return path out of expireSession (this one
+		// included) unwinds back into that defer.
+		if sess.mode == ModePending {
+			_ = sess.mgr.Stop()
+			delete(ports, port)
+		}
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+		return
 	}
+
 	knownPorts := sess.portsAtAcquire
 
 	// Wait for port availability (USB CDC may need time after close)
@@ -524,6 +626,23 @@ func expireSession(sess *PortSession, port string) {
 
 // ReleaseFlasherDeferred schedules a deferred restart via timer. Used by async handlers.
 func ReleaseFlasherDeferred(sess *PortSession, port string) {
+	releaseFlasherDeferred(sess, port, false)
+}
+
+// ReleaseFlasherDeferredNoReset schedules a deferred restart via timer, like
+// ReleaseFlasherDeferred, but marks the session so expireSession skips the
+// underlying flasher.Reset() call when the timer fires (Close() and the
+// reader-restart/cleanup logic are unaffected). Intended for callers (e.g.
+// the gpio MCP handler) that must not perturb device state on release.
+func ReleaseFlasherDeferredNoReset(sess *PortSession, port string) {
+	releaseFlasherDeferred(sess, port, true)
+}
+
+// releaseFlasherDeferred is the shared implementation behind
+// ReleaseFlasherDeferred and ReleaseFlasherDeferredNoReset. noReset is always
+// explicitly set on every call — true or false — so a session's
+// noResetOnExpire flag can never carry over stale state from a prior release.
+func releaseFlasherDeferred(sess *PortSession, port string, noReset bool) {
 	portsMu.Lock()
 	defer func() {
 		snap := snapshotPorts()
@@ -532,16 +651,18 @@ func ReleaseFlasherDeferred(sess *PortSession, port string) {
 	}()
 
 	sess.mode = ModePending
+	sess.noResetOnExpire = noReset
 	// done is closed exactly once: by the callback below when it finishes
 	// (Stop() lost the race), or by stopSessionTimerLocked when Stop() wins
 	// the race and the callback will never run. Registered in expireTimers
 	// immediately (before the timer can possibly fire) so WaitForExpireSessions
 	// can find and join it via the registry regardless of whether
 	// expireSession later deletes this session from ports on its
-	// failure/never-re-enumerate path (BR-63 delete-path fix) — the join no
-	// longer depends on ports map membership. Assigning done to
+	// failure/never-re-enumerate path OR its no-reset-held early-return path
+	// (BR-63 delete-path fix, extended to cover the held branch too) — the
+	// join no longer depends on ports map membership. Assigning done to
 	// sess.timerDone too (as before) preserves stopSessionTimerLocked's
-	// "was this timer scheduled by ReleaseFlasherDeferred" check.
+	// "was this timer scheduled by releaseFlasherDeferred" check.
 	done := make(chan struct{})
 	sess.timerDone = done
 	registerExpireTimer(done)
@@ -557,13 +678,13 @@ func ReleaseFlasherDeferred(sess *PortSession, port string) {
 // ReleaseFlasherImmediate restarts the reader immediately. Used by inline handlers.
 // Returns the new port name if the port was re-enumerated, otherwise "".
 func ReleaseFlasherImmediate(sess *PortSession, port string) string {
-	// Close cached flasher while holding lock
+	// Close cached flasher while holding lock. An immediate release
+	// explicitly returns the chip to run mode, so this always resets
+	// regardless of any armed no-reset hold — clear the flag first, both to
+	// force the reset and to prevent it leaking into a reused session.
 	portsMu.Lock()
-	if sess.flasher != nil {
-		sess.flasher.Reset()
-		_ = sess.flasher.Close()
-		sess.flasher = nil
-	}
+	sess.noResetOnExpire = false
+	closeCachedFlasher(sess)
 	knownPorts := sess.portsAtAcquire
 	portsMu.Unlock()
 
@@ -616,11 +737,7 @@ func AcquireForExternal(port string) *PortSession {
 	sess, exists := ports[port]
 	if exists {
 		// Close cached flasher if any
-		if sess.flasher != nil {
-			sess.flasher.Reset()
-			_ = sess.flasher.Close()
-			sess.flasher = nil
-		}
+		closeCachedFlasher(sess)
 
 		switch sess.mode {
 		case ModeReader:
@@ -730,11 +847,7 @@ func ResolveSession(args map[string]interface{}) (*serial.Manager, string, error
 	if sess.mode == ModePending {
 		stopSessionTimerLocked(sess)
 		// Close cached flasher if any
-		if sess.flasher != nil {
-			sess.flasher.Reset()
-			_ = sess.flasher.Close()
-			sess.flasher = nil
-		}
+		closeCachedFlasher(sess)
 		// Restart reader
 		knownPorts := sess.portsAtAcquire
 		portsMu.Unlock()
@@ -781,11 +894,7 @@ func StartSession(port string, baud int, bufSize int) error {
 		// Cancel pending timer if any
 		stopSessionTimerLocked(sess)
 		// Close cached flasher if any
-		if sess.flasher != nil {
-			sess.flasher.Reset()
-			_ = sess.flasher.Close()
-			sess.flasher = nil
-		}
+		closeCachedFlasher(sess)
 		// Restart reader with new baud
 		_ = sess.mgr.Stop()
 		sess.baud = baud
@@ -811,11 +920,7 @@ func teardownSessionLocked(sess *PortSession, port string) {
 	stopSessionTimerLocked(sess)
 
 	// Close cached flasher if any
-	if sess.flasher != nil {
-		sess.flasher.Reset()
-		_ = sess.flasher.Close()
-		sess.flasher = nil
-	}
+	closeCachedFlasher(sess)
 
 	// Stop reader
 	_ = sess.mgr.Stop()
@@ -891,11 +996,12 @@ func CleanupAllSessions() {
 
 	for port, sess := range ports {
 		stopSessionTimerLocked(sess)
-		if sess.flasher != nil {
-			sess.flasher.Reset()
-			_ = sess.flasher.Close()
-			sess.flasher = nil
-		}
+		// Process shutdown should leave boards in a clean run state, not
+		// stuck in the bootloader — always reset regardless of any armed
+		// no-reset hold; clearing the flag first also prevents it leaking
+		// into a reused session.
+		sess.noResetOnExpire = false
+		closeCachedFlasher(sess)
 		_ = sess.mgr.Stop()
 		delete(ports, port)
 	}

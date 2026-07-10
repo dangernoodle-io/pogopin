@@ -265,13 +265,14 @@ func TestNVSPhaseClassificationCovered(t *testing.T) {
 }
 
 // TestAllStatusPhasesClassified extends TestNVSPhaseClassificationCovered's
-// guard to the full esp.StatusPhase* set added in Phase 2
-// (StatusPhaseComputingHash/Resetting/CapturingBoot/Complete), which aren't
-// part of the NVS read-modify-write orchestration and so are wired through
-// newSequentialStatusEmitter instead. sequentialOnlyPhases isn't consulted by
-// any adapter at runtime — it exists solely so this test can catch a new
-// esp.StatusPhase* constant added without anyone wiring it into either
-// classification.
+// guard to the non-NVS esp.StatusPhase* set (StatusPhaseResetting/
+// CapturingBoot/Complete), which isn't part of the NVS read-modify-write
+// orchestration and so is wired through newSequentialStatusEmitter instead.
+// sequentialOnlyPhases isn't consulted by any adapter at runtime — it exists
+// solely so this test can catch a new esp.StatusPhase* constant added without
+// anyone wiring it into either classification. (The md5 branch drives a real
+// ETA bar via espflasher.ProgressFunc, not a StatusFunc phase, so it has no
+// StatusPhase constant to classify.)
 func TestAllStatusPhasesClassified(t *testing.T) {
 	allPhases := []string{
 		esp.StatusPhaseReadingPartition,
@@ -280,7 +281,6 @@ func TestAllStatusPhasesClassified(t *testing.T) {
 		esp.StatusPhaseWriting,
 		esp.StatusPhaseReadingBack,
 		esp.StatusPhaseVerifying,
-		esp.StatusPhaseComputingHash,
 		esp.StatusPhaseResetting,
 		esp.StatusPhaseCapturingBoot,
 		esp.StatusPhaseComplete,
@@ -300,7 +300,7 @@ func TestAllStatusPhasesClassified(t *testing.T) {
 			"phase %q must be classified in exactly one of nvsBytePhases/nvsPhaseOrdinal/sequentialOnlyPhases", phase)
 	}
 
-	assert.Len(t, sequentialOnlyPhases, 4)
+	assert.Len(t, sequentialOnlyPhases, 3)
 	assert.Equal(t, len(allPhases), len(nvsBytePhases)+len(nvsPhaseOrdinal)+len(sequentialOnlyPhases),
 		"every esp.StatusPhase* constant must be classified exactly once")
 }
@@ -330,12 +330,12 @@ func TestNewSequentialStatusEmitterCapsAtStepsTotal(t *testing.T) {
 	}
 	status := newSequentialStatusEmitter(emit, 2)
 
-	status(esp.StatusPhaseComputingHash, 0, 0)
+	status(esp.StatusPhaseResetting, 0, 0)
 	status(esp.StatusPhaseComplete, 0, 0)
 	status("extra tick beyond declared total", 0, 0)
 
 	assert.Equal(t, []progressCall{
-		{1, 2, esp.StatusPhaseComputingHash},
+		{1, 2, esp.StatusPhaseResetting},
 		{2, 2, esp.StatusPhaseComplete},
 		{2, 2, "extra tick beyond declared total"},
 	}, calls)

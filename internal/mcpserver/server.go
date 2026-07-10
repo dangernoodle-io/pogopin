@@ -16,6 +16,7 @@ ESP device info: esp_info (chip by default; pass include=security for secure boo
 ESP flash ops: esp_read_flash (raw bytes or md5=true for hash), esp_erase
 ESP NVS: esp_read_nvs (read), esp_nvs_set (set keys, RMW), esp_nvs_delete (delete keys, RMW), esp_write_nvs (DESTRUCTIVE full partition replace)
 ESP low-level: esp_register (read/write), esp_reset
+ESP GPIO: esp_gpio_read (level), esp_gpio_set (drive), esp_gpio_sweep (probe pin range) — no reset on exit, chip stays in bootloader for repeated probing
 Crash analysis: decode_backtrace (xtensa/riscv32 panic frames)
 esp_* tools auto-stop the monitor and restart after the op.`
 
