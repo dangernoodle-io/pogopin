@@ -7,7 +7,7 @@ import (
 
 func registerFlashExternalTool(s *server.MCPServer) {
 	flashTool := mcp.NewTool("flash_external",
-		mcp.WithDescription("Run a flash/build command while managing serial lifecycle (stop → exec → restart → capture boot output). Use for platformio, make, esptool.py, or any build+flash workflow. By default runs the command directly (no shell); set shell=true for &&, pipes, or globs. Set cwd for commands that need a working directory (e.g., make). For native ESP flashing without external tools, use serial_flash_esp instead."),
+		mcp.WithDescription("Run a flash/build command while managing serial lifecycle (stop → exec → restart → capture boot output). Use for platformio, make, esptool.py, or any build+flash workflow. By default runs the command directly (no shell); set shell=true for &&, pipes, or globs. Set cwd for commands that need a working directory (e.g., make). For native ESP flashing without external tools, use esp_flash instead."),
 		mcp.WithString("port", mcp.Description("Port name (optional if only one port open)")),
 		mcp.WithString("command", mcp.Required(), mcp.Description("Flash command to run")),
 		mcp.WithArray("args", mcp.Description("Command arguments")),

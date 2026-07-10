@@ -16,9 +16,10 @@ ESP device info: esp_info (chip by default; pass include=security for secure boo
 ESP flash ops: esp_read_flash (raw bytes or md5=true for hash), esp_erase
 ESP NVS: esp_read_nvs (read), esp_nvs_set (set keys, RMW), esp_nvs_delete (delete keys, RMW), esp_write_nvs (DESTRUCTIVE full partition replace)
 ESP low-level: esp_register (read/write), esp_reset
-ESP GPIO: esp_gpio_read (level), esp_gpio_set (drive), esp_gpio_sweep (probe pin range) — no reset on exit, chip stays in bootloader for repeated probing
+ESP GPIO: esp_gpio_read (level), esp_gpio_set (drive), esp_gpio_sweep (probe pin range)
 Crash analysis: decode_backtrace (xtensa/riscv32 panic frames)
-esp_* tools auto-stop the monitor and restart after the op.`
+Most esp_* tools auto-stop the monitor and restart after the op (exception: esp_gpio_* tools — see below).
+esp_gpio_read/esp_gpio_set/esp_gpio_sweep hold the chip in download/bootloader mode with no reset after the call, so repeated probes reuse the same connection and don't perturb pin state; the port auto-returns to normal serial_start monitoring after ~5s of inactivity.`
 
 // Serve starts the MCP server.
 func Serve() error {
