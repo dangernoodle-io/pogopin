@@ -136,3 +136,41 @@ func connectStatusEmitter(emit func(current, total int, msg string)) espflasher.
 		emit(ordinal, connectPhaseTotal, msg)
 	}
 }
+
+// newSequentialStatusEmitter adapts an emit func onto a purely-discrete phase
+// orchestration — one with no byte-denominated phase, unlike the NVS
+// read-modify-write paths (nvsStatusEmitter). Every distinct tick received is
+// assigned the next sequential ordinal (1-based) out of a fixed stepsTotal,
+// in call order. This removes the need for a hand-maintained phase->ordinal
+// map (nvsPhaseOrdinal's style) per tool: callers just supply the known step
+// count for their orchestration, and the phase label always rides along as
+// the notification message. Shared by esp_reset, esp_read_flash's md5
+// branch, and flash_external's phase markers.
+//
+// Both esp.StatusFunc and flash.StatusFunc share the same
+// func(phase string, current, total int) shape, so the returned func is
+// directly assignable to either.
+func newSequentialStatusEmitter(emit func(current, total int, msg string), stepsTotal int) func(phase string, current, total int) {
+	step := 0
+	return func(phase string, current, total int) {
+		if step < stepsTotal {
+			step++
+		}
+		emit(step, stepsTotal, phase)
+	}
+}
+
+// lifecycleStatus emits a start tick (1/2) then returns a done func that
+// emits a completion tick (2/2). This is the minimal uniform start+completion
+// status signal every tool emits per the plan's design — including fast
+// (<1s) tools whose MCP progress bar the client won't visibly paint. Callers
+// typically `defer done()` right after acquiring it. A nil progress token
+// (the caller didn't request notifications) makes both ticks a no-op via
+// sendProgress.
+func lifecycleStatus(ctx context.Context, req mcp.CallToolRequest, label string) func() {
+	emit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	emit(1, 2, "start: "+label)
+	return func() {
+		emit(2, 2, "complete: "+label)
+	}
+}

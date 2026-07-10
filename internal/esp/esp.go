@@ -33,6 +33,22 @@ const (
 	StatusPhaseWriting               = "writing"
 	StatusPhaseReadingBack           = "reading back"
 	StatusPhaseVerifying             = "verifying"
+	// StatusPhaseComputingHash is emitted around GetFlashMD5's opaque hash
+	// computation. GetFlashMD5 itself has no byte-progress hook yet (a later
+	// phase adds one upstream) so this is a coarse before/after marker, not a
+	// bar.
+	StatusPhaseComputingHash = "computing hash"
+	// StatusPhaseResetting is emitted by ResetESP immediately before the
+	// actual chip reset.
+	StatusPhaseResetting = "resetting"
+	// StatusPhaseCapturingBoot is emitted by callers (e.g. handleReset,
+	// flash_external) around their post-op boot-output capture step. Lives
+	// here, not just in mcpserver, so it's part of the same reusable phase
+	// vocabulary a future CLI adapter can render.
+	StatusPhaseCapturingBoot = "capturing boot"
+	// StatusPhaseComplete is a terminal tick emitted at the end of an
+	// orchestration that has no other natural final phase.
+	StatusPhaseComplete = "complete"
 )
 
 // emitStatus is a nil-safe StatusFunc invocation helper for a discrete
@@ -421,8 +437,12 @@ func WriteRegister(factory FlasherFactory, port string, address, value uint32, b
 	return f.WriteRegister(address, value)
 }
 
-// ResetESP resets an ESP device.
-func ResetESP(factory FlasherFactory, port string, resetMode string) error {
+// ResetESP resets an ESP device. status, if non-nil, receives a
+// "resetting" tick immediately before the reset is issued. Callers that
+// orchestrate further steps after reset (e.g. boot-output capture) reuse the
+// same status func directly for their own StatusPhaseCapturingBoot/
+// StatusPhaseComplete ticks — ResetESP's job ends at the reset itself.
+func ResetESP(factory FlasherFactory, port string, resetMode string, status StatusFunc) error {
 	flashOpts := espflasher.DefaultOptions()
 	flashOpts.BaudRate = 115200
 	flashOpts.ResetMode = parseResetMode(resetMode)
@@ -433,6 +453,7 @@ func ResetESP(factory FlasherFactory, port string, resetMode string) error {
 	}
 	defer func() { _ = f.Close() }()
 
+	emitStatus(status, StatusPhaseResetting)
 	f.Reset()
 	return nil
 }
@@ -469,8 +490,13 @@ func GetSecurityInfo(factory FlasherFactory, port string, baudRate int, resetMod
 	}, nil
 }
 
-// GetFlashMD5 computes the MD5 hash of a flash region.
-func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string) (FlashMD5Result, error) {
+// GetFlashMD5 computes the MD5 hash of a flash region. status, if non-nil,
+// receives a coarse "computing hash" tick before the (currently
+// progress-less) hash computation and a "complete" tick after it succeeds.
+// f.GetFlashMD5 has no byte-progress hook yet — a later phase adds one
+// upstream and threads it through here — so these are before/after markers,
+// not a bar.
+func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudRate int, resetMode string, status StatusFunc) (FlashMD5Result, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -487,10 +513,12 @@ func GetFlashMD5(factory FlasherFactory, port string, offset, size uint32, baudR
 		_ = f.Close()
 	}()
 
+	emitStatus(status, StatusPhaseComputingHash)
 	md5, err := f.GetFlashMD5(offset, size)
 	if err != nil {
 		return FlashMD5Result{}, err
 	}
+	emitStatus(status, StatusPhaseComplete)
 
 	return FlashMD5Result{
 		Offset: offset,

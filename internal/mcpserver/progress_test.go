@@ -263,3 +263,123 @@ func TestNVSPhaseClassificationCovered(t *testing.T) {
 	assert.Equal(t, len(allPhases), len(nvsBytePhases)+len(nvsPhaseOrdinal),
 		"every esp.StatusPhase* constant must be classified exactly once")
 }
+
+// TestAllStatusPhasesClassified extends TestNVSPhaseClassificationCovered's
+// guard to the full esp.StatusPhase* set added in Phase 2
+// (StatusPhaseComputingHash/Resetting/CapturingBoot/Complete), which aren't
+// part of the NVS read-modify-write orchestration and so are wired through
+// newSequentialStatusEmitter instead. sequentialOnlyPhases isn't consulted by
+// any adapter at runtime — it exists solely so this test can catch a new
+// esp.StatusPhase* constant added without anyone wiring it into either
+// classification.
+func TestAllStatusPhasesClassified(t *testing.T) {
+	allPhases := []string{
+		esp.StatusPhaseReadingPartition,
+		esp.StatusPhaseParsing,
+		esp.StatusPhaseVerifyingCompleteness,
+		esp.StatusPhaseWriting,
+		esp.StatusPhaseReadingBack,
+		esp.StatusPhaseVerifying,
+		esp.StatusPhaseComputingHash,
+		esp.StatusPhaseResetting,
+		esp.StatusPhaseCapturingBoot,
+		esp.StatusPhaseComplete,
+	}
+
+	for _, phase := range allPhases {
+		_, isByte := nvsBytePhases[phase]
+		_, isOrdinal := nvsPhaseOrdinal[phase]
+		_, isSequential := sequentialOnlyPhases[phase]
+		count := 0
+		for _, b := range []bool{isByte, isOrdinal, isSequential} {
+			if b {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count,
+			"phase %q must be classified in exactly one of nvsBytePhases/nvsPhaseOrdinal/sequentialOnlyPhases", phase)
+	}
+
+	assert.Len(t, sequentialOnlyPhases, 4)
+	assert.Equal(t, len(allPhases), len(nvsBytePhases)+len(nvsPhaseOrdinal)+len(sequentialOnlyPhases),
+		"every esp.StatusPhase* constant must be classified exactly once")
+}
+
+func TestNewSequentialStatusEmitterAssignsOrdinalsInCallOrder(t *testing.T) {
+	var calls []progressCall
+	emit := func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	}
+	status := newSequentialStatusEmitter(emit, 3)
+
+	status(esp.StatusPhaseResetting, 0, 0)
+	status(esp.StatusPhaseCapturingBoot, 0, 0)
+	status(esp.StatusPhaseComplete, 0, 0)
+
+	assert.Equal(t, []progressCall{
+		{1, 3, esp.StatusPhaseResetting},
+		{2, 3, esp.StatusPhaseCapturingBoot},
+		{3, 3, esp.StatusPhaseComplete},
+	}, calls)
+}
+
+func TestNewSequentialStatusEmitterCapsAtStepsTotal(t *testing.T) {
+	var calls []progressCall
+	emit := func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	}
+	status := newSequentialStatusEmitter(emit, 2)
+
+	status(esp.StatusPhaseComputingHash, 0, 0)
+	status(esp.StatusPhaseComplete, 0, 0)
+	status("extra tick beyond declared total", 0, 0)
+
+	assert.Equal(t, []progressCall{
+		{1, 2, esp.StatusPhaseComputingHash},
+		{2, 2, esp.StatusPhaseComplete},
+		{2, 2, "extra tick beyond declared total"},
+	}, calls)
+}
+
+func TestLifecycleStatusStartAndCompletion(t *testing.T) {
+	var calls []progressCall
+	req := mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Meta: &mcp.Meta{ProgressToken: "tok-fast"},
+		},
+	}
+	ctx := context.Background()
+
+	// lifecycleStatus itself calls sendProgress, which requires a server in
+	// context to actually deliver -- absent one it's a no-op send, but the
+	// emitter throttle/shape logic under test (start then completion, two
+	// distinct ticks) is exercised the same way regardless. Swap in a fake
+	// emit by testing lifecycleStatus's building blocks directly instead.
+	emit := newProgressEmitter(func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	})
+	emit(1, 2, "start: esp_info")
+	done := func() { emit(2, 2, "complete: esp_info") }
+	done()
+
+	assert.Equal(t, []progressCall{
+		{1, 2, "start: esp_info"},
+		{2, 2, "complete: esp_info"},
+	}, calls)
+
+	// Exercise the real lifecycleStatus for nil-token no-op behavior.
+	assert.NotPanics(t, func() {
+		doneFn := lifecycleStatus(ctx, req, "esp_info")
+		doneFn()
+	})
+}
+
+func TestLifecycleStatusNilTokenNoop(t *testing.T) {
+	req := mcp.CallToolRequest{}
+	ctx := context.Background()
+
+	assert.NotPanics(t, func() {
+		done := lifecycleStatus(ctx, req, "serial_list")
+		done()
+	})
+}

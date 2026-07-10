@@ -595,10 +595,36 @@ func TestResetESPSuccess(t *testing.T) {
 		return mock, nil
 	}
 
-	err := ResetESP(factory, "/dev/ttyUSB0", "")
+	err := ResetESP(factory, "/dev/ttyUSB0", "", nil)
 	require.NoError(t, err)
 	assert.True(t, mock.resetCalled)
 	assert.True(t, mock.closeCalled)
+}
+
+func TestResetESPStatusPhaseSequence(t *testing.T) {
+	mock := &mockFlasher{}
+	factory := func(_ string, _ *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var ticks []string
+	err := ResetESP(factory, "/dev/ttyUSB0", "", func(phase string, current, total int) {
+		ticks = append(ticks, phase)
+		assert.Equal(t, 0, current)
+		assert.Equal(t, 0, total)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{StatusPhaseResetting}, ticks)
+}
+
+func TestResetESPNilStatusNoop(t *testing.T) {
+	mock := &mockFlasher{}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	err := ResetESP(factory, "/dev/ttyUSB0", "", nil)
+	require.NoError(t, err)
 }
 
 func TestResetESPWithMode(t *testing.T) {
@@ -609,7 +635,7 @@ func TestResetESPWithMode(t *testing.T) {
 		return mock, nil
 	}
 
-	err := ResetESP(factory, "/dev/ttyUSB0", "usb_jtag")
+	err := ResetESP(factory, "/dev/ttyUSB0", "usb_jtag", nil)
 	require.NoError(t, err)
 	assert.Equal(t, espflasher.ResetUSBJTAG, capturedOpts.ResetMode)
 }
@@ -619,7 +645,7 @@ func TestResetESPFactoryError(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	err := ResetESP(factory, "/dev/ttyUSB0", "")
+	err := ResetESP(factory, "/dev/ttyUSB0", "", nil)
 	require.Error(t, err)
 }
 
@@ -692,12 +718,44 @@ func TestGetFlashMD5Success(t *testing.T) {
 		return mock, nil
 	}
 
-	result, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "")
+	result, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, uint32(0x1000), result.Offset)
 	assert.Equal(t, uint32(0x1000), result.Size)
 	assert.Equal(t, "5d41402abc4b2a76b9719d911017c592", result.MD5)
 	assert.True(t, mock.closeCalled)
+}
+
+func TestGetFlashMD5StatusPhaseSequence(t *testing.T) {
+	mock := &mockFlasher{
+		flashMD5Val: "5d41402abc4b2a76b9719d911017c592",
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var ticks []string
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0x1000, 0x1000, 0, "", func(phase string, current, total int) {
+		ticks = append(ticks, phase)
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{StatusPhaseComputingHash, StatusPhaseComplete}, ticks)
+}
+
+func TestGetFlashMD5StatusNoCompleteOnError(t *testing.T) {
+	mock := &mockFlasher{
+		flashMD5Err: os.ErrPermission,
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	var ticks []string
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "", func(phase string, current, total int) {
+		ticks = append(ticks, phase)
+	})
+	require.Error(t, err)
+	assert.Equal(t, []string{StatusPhaseComputingHash}, ticks)
 }
 
 func TestGetFlashMD5BaudDefault(t *testing.T) {
@@ -710,7 +768,7 @@ func TestGetFlashMD5BaudDefault(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, 115200, capturedOpts.BaudRate)
 }
@@ -723,7 +781,7 @@ func TestGetFlashMD5Error(t *testing.T) {
 		return mock, nil
 	}
 
-	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.Error(t, err)
 }
 
@@ -732,7 +790,7 @@ func TestGetFlashMD5FactoryError(t *testing.T) {
 		return nil, os.ErrPermission
 	}
 
-	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "")
+	_, err := GetFlashMD5(factory, "/dev/ttyUSB0", 0, 0, 0, "", nil)
 	require.Error(t, err)
 }
 

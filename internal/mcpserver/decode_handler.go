@@ -12,6 +12,8 @@ import (
 
 // handleDecodeBacktrace handles the decode_backtrace MCP tool request.
 func handleDecodeBacktrace(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	done := lifecycleStatus(ctx, req, "decode_backtrace")
+	defer done()
 	// Extract required parameter
 	elfPath, err := req.RequireString("elf_path")
 	if err != nil {

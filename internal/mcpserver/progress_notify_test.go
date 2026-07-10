@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"dangernoodle.io/pogopin/internal/esp"
+	"dangernoodle.io/pogopin/internal/serial"
 	"dangernoodle.io/pogopin/internal/session"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	goSerial "go.bug.st/serial"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
 )
 
@@ -383,7 +385,12 @@ func TestHandleReadFlashNoProgressTokenEmitsNoNotifications(t *testing.T) {
 	assert.Empty(t, frames, "no progressToken supplied -> zero progress notifications")
 }
 
-func TestHandleReadFlashMD5ModeEmitsNoProgressNotifications(t *testing.T) {
+// TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers verifies the md5
+// branch (Phase 2) emits its coarse computing-hash -> complete sequential
+// markers even though f.GetFlashMD5 has no chunked byte-progress seam yet
+// (a later phase adds one upstream) -- every tool emits at least a
+// start/phase/completion signal per the plan, never true silence.
+func TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers(t *testing.T) {
 	setupTestPorts(t)
 	setupTestFlasherFactory(t)
 
@@ -409,7 +416,63 @@ func TestHandleReadFlashMD5ModeEmitsNoProgressNotifications(t *testing.T) {
 	requireToolCallOK(t, msg)
 
 	frames := progressFrames(t, sess.ch)
-	assert.Empty(t, frames, "md5 mode has no chunked seam -> zero progress notifications even with a token")
+	require.Len(t, frames, 2, "md5 mode emits the 2-step computing-hash -> complete sequence, not a byte bar")
+	assert.Equal(t, "computing hash", frames[0]["message"])
+	assert.Equal(t, "complete", frames[1]["message"])
+}
+
+// TestHandleFlashExternalEmitsExactPhaseSequence pins flash_external's
+// combined 5-tick sequence end to end through the real MCP notification
+// path: stopping port / running command / restarting (inside flash.Flash)
+// then capturing boot / complete (handleSerialFlash, after Flash returns).
+// This is the handler-level counterpart to flash's own
+// TestFlashStatusPhaseSequence (which only covers the first three ticks)
+// and mirrors TestHandleReadFlashMD5ModeEmitsCoarseCompleteMarkers's
+// pattern for esp_read_flash's md5 branch. A drift in either Flash()'s
+// ticks or the handler's own two ticks -- or in flashExternalStepsTotal --
+// breaks this test instead of newSequentialStatusEmitter silently
+// under/over-counting.
+func TestHandleFlashExternalEmitsExactPhaseSequence(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+
+	m := serial.NewManagerWithBufferSize(1000)
+	m.OpenFunc = func(name string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+	session.InsertPort("flash-external-port", session.NewPortSession(m, "flash-external-port", m.Baud(), session.ModeReader))
+
+	require.NoError(t, m.Start("flash-external-port", 115200))
+
+	s := newProgressTestServer(t)
+	sess := newNotifyCapture("flash-external-progress")
+	ctx := s.WithContext(context.Background(), sess)
+
+	args := map[string]any{
+		"port":      "flash-external-port",
+		"command":   "echo",
+		"args":      []any{"hello"},
+		"boot_wait": float64(0),
+	}
+	msg := s.HandleMessage(ctx, toolCallMessage(t, "flash_external", args, "tok-flash-external"))
+	requireToolCallOK(t, msg)
+
+	frames := progressFrames(t, sess.ch)
+	require.Len(t, frames, 5, "flash_external must emit exactly the 5-step sequential sequence")
+
+	wantPhases := []string{
+		"stopping port",
+		"running command",
+		"restarting",
+		"capturing boot",
+		"complete",
+	}
+	for i, f := range frames {
+		assert.Equal(t, "tok-flash-external", f["progressToken"], "frame %d token", i)
+		assert.Equal(t, wantPhases[i], f["message"], "frame %d message", i)
+		assert.EqualValues(t, i+1, f["progress"], "frame %d progress ordinal", i)
+		assert.EqualValues(t, 5, f["total"], "frame %d total", i)
+	}
 }
 
 func TestHandleEraseNoProgressTokenEmitsNoNotifications(t *testing.T) {
