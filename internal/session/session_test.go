@@ -2034,6 +2034,83 @@ func TestExpireSessionNormalExpiryRestartsMonitor(t *testing.T) {
 	portsMu.Unlock()
 }
 
+// TestExpireSessionSkipsTeardownWhenReclaimedByConcurrentAcquire verifies the
+// BR-64 fix: if a concurrent AcquireForFlasher wins portsMu first and flips
+// mode away from ModePending (intending to reuse the cached flasher),
+// expireSession must return immediately WITHOUT calling closeCachedFlasher —
+// closing/nilling sess.flasher here would hand the racing acquirer a dead
+// handle, losing the reuse optimization. This simulates the race directly:
+// mode is already ModeFlasher (as AcquireForFlasher would have set it) by the
+// time expireSession runs.
+func TestExpireSessionSkipsTeardownWhenReclaimedByConcurrentAcquire(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupFastWaitForPort(t)
+
+	port := "/dev/cu.usbmodem1101"
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:     newManagerFunc(1000),
+		port:    port,
+		baud:    115200,
+		mode:    ModeFlasher, // concurrent AcquireForFlasher already reclaimed this session
+		flasher: mock,
+	}
+	ports[port] = sess
+	portsMu.Unlock()
+
+	expireSession(sess, port)
+
+	assert.False(t, mock.resetCalled, "Reset() must not run when the session was reclaimed before expiry")
+	assert.False(t, mock.closeCalled, "Close() must not run when the session was reclaimed before expiry — the flasher must remain live for reuse")
+
+	portsMu.Lock()
+	assert.Same(t, mock, sess.flasher, "the cached flasher must remain intact for the racing acquirer to reuse")
+	assert.Equal(t, ModeFlasher, sess.mode, "expireSession must not alter mode when it wasn't the reclaiming session's owner")
+	_, exists := ports[port]
+	portsMu.Unlock()
+	assert.True(t, exists, "expireSession must not remove a session it doesn't own from the ports map")
+}
+
+// TestExpireSessionHeldSkipsTeardownWhenReclaimedByConcurrentAcquire is the
+// held-hold variant of the BR-64 fix: even when noResetOnExpire is armed, a
+// concurrent acquire that reclaimed the session before expiry must still win
+// — closeCachedFlasher must not run, regardless of the hold flag.
+func TestExpireSessionHeldSkipsTeardownWhenReclaimedByConcurrentAcquire(t *testing.T) {
+	setupTestPorts(t)
+	setupTestManagersFunc(t)
+	setupFastWaitForPort(t)
+
+	port := "/dev/cu.usbmodem1101"
+	mock := &mockFlasher{chipNameVal: "ESP32"}
+
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:             newManagerFunc(1000),
+		port:            port,
+		baud:            115200,
+		mode:            ModeFlasher, // concurrent AcquireForFlasher already reclaimed this session
+		flasher:         mock,
+		noResetOnExpire: true,
+	}
+	ports[port] = sess
+	portsMu.Unlock()
+
+	expireSession(sess, port)
+
+	assert.False(t, mock.resetCalled, "Reset() must not run when the session was reclaimed before expiry")
+	assert.False(t, mock.closeCalled, "Close() must not run when the session was reclaimed before expiry")
+
+	portsMu.Lock()
+	assert.Same(t, mock, sess.flasher, "the cached flasher must remain intact for the racing acquirer to reuse")
+	assert.True(t, sess.noResetOnExpire, "the hold flag must not be consumed by an expiry that didn't own the session")
+	_, exists := ports[port]
+	portsMu.Unlock()
+	assert.True(t, exists, "expireSession must not remove a session it doesn't own from the ports map")
+}
+
 // TestResolveSessionHonorsNoResetOnExpireHold verifies the CRITICAL finding
 // fix: a statusline/serial_read/serial_write/serial_status poll that routes
 // through ResolveSession while a pending session's no-reset hold is armed
