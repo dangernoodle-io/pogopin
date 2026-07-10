@@ -31,30 +31,34 @@ make install  # go install .
 
 ## Tools
 
-| Tool | Domain | Description |
-|------|--------|-------------|
-| serial_list | serial | List available serial ports |
-| serial_start | serial | Open port, start buffered monitoring |
-| serial_read | serial | Read buffered serial output |
-| serial_write | serial | Write data to port |
-| serial_stop | serial | Close port |
-| serial_restart | serial | Atomic stop+start on a port (re-trigger DTR/RTS reset) |
-| serial_status | serial | Port status (JSON) |
-| flash_external | flash | Stop port → run external flash command → restart → capture |
-| esp_flash | ESP | Flash firmware (native Go flasher) |
-| esp_erase | ESP | Erase flash (whole chip or region) |
-| esp_info | ESP | Chip info (default) or security info (include=security) |
-| esp_register | ESP | Read/write 32-bit register (omit value=read, provide value=write) |
-| esp_reset | ESP | Reset via bootloader |
-| esp_read_flash | ESP | Read flash bytes or MD5 hash (md5=true) |
-| esp_read_nvs | ESP | Read NVS entries |
-| esp_write_nvs | ESP | Full NVS partition replace (DESTRUCTIVE — intentional, unguarded) |
-| esp_nvs_set | ESP | Set NVS keys (read-modify-write, batch entries[]) |
-| esp_nvs_delete | ESP | Delete NVS key or namespace (read-modify-write) |
-| esp_gpio_read | ESP | Read a GPIO pin level via the bootloader (no firmware) |
-| esp_gpio_set | ESP | Drive a GPIO pin high/low; refuses reserved/input-only pins unless include_reserved |
-| esp_gpio_sweep | ESP | Sweep/dwell across candidate GPIOs to find which drives an LED; no-reset hold |
-| decode_backtrace | decode | Symbolize xtensa/riscv32 panic frames |
+Risk is sourced from the `toolRiskClass` registry (`internal/mcpserver/risk.go`, BR-71) — the single source of truth; `internal/mcpserver/tool_risk_doc_test.go` enforces this table stays aligned with it.
+
+<!-- tool-risk-table:start -->
+| Tool | Domain | Risk | Description |
+|------|--------|------|-------------|
+| serial_list | serial | read | List available serial ports |
+| serial_start | serial | write | Open port, start buffered monitoring |
+| serial_read | serial | read | Read buffered serial output |
+| serial_write | serial | write | Write data to port |
+| serial_stop | serial | write | Close port |
+| serial_restart | serial | write | Atomic stop+start on a port (re-trigger DTR/RTS reset) |
+| serial_status | serial | read | Port status (JSON) |
+| flash_external | flash | destructive | Stop port → run external flash command → restart → capture |
+| esp_flash | ESP | destructive | Flash firmware (native Go flasher) |
+| esp_erase | ESP | destructive | Erase flash (whole chip or region) |
+| esp_info | ESP | read | Chip info (default) or security info (include=security) |
+| esp_register | ESP | write | Read/write 32-bit register (omit value=read, provide value=write) |
+| esp_reset | ESP | write | Reset via bootloader |
+| esp_read_flash | ESP | read | Read flash bytes or MD5 hash (md5=true) |
+| esp_read_nvs | ESP | read | Read NVS entries |
+| esp_write_nvs | ESP | destructive | Full NVS partition replace (DESTRUCTIVE — intentional, unguarded) |
+| esp_nvs_set | ESP | write | Set NVS keys (read-modify-write, batch entries[]) |
+| esp_nvs_delete | ESP | write | Delete NVS key or namespace (read-modify-write) |
+| esp_gpio_read | ESP | read | Read a GPIO pin level via the bootloader (no firmware) |
+| esp_gpio_set | ESP | destructive | Drive a GPIO pin high/low; refuses reserved/input-only pins unless include_reserved |
+| esp_gpio_sweep | ESP | destructive | Sweep/dwell across candidate GPIOs to find which drives an LED; no-reset hold |
+| decode_backtrace | decode | read | Symbolize xtensa/riscv32 panic frames |
+<!-- tool-risk-table:end -->
 
 `esp_nvs_set`/`esp_nvs_delete` (BR-53) are RMW with defense-in-depth independent of the codec: a **pre-write completeness guard** (`internal/esp/nvs_guard.go`) reads the raw partition's per-page entry-state bitmap and counts Written slots directly (ground truth, no structural interpretation), then compares against the slot span accounted for by `nvs.ParseNVS`'s result plus independently-counted namespace-declaration slots — if the parse left any Written slot unaccounted for, the write aborts before anything is flashed rather than silently dropping data. After a successful flash, the partition is re-read and re-parsed; `esp_nvs_set` confirms every requested key landed with its new value and every untouched pre-existing key survived, `esp_nvs_delete` confirms the deleted key(s) are gone and everything else survived. Only a verified outcome is reported as success — `updated`/`deleted` counts reflect confirmed changes, not the request. `esp_write_nvs` remains the intentional destructive full-partition replace with no such guard.
 
