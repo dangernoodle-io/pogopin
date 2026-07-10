@@ -544,6 +544,22 @@ func AcquireForFlasher(port string, connectStatus espflasher.ConnectStatusFunc) 
 func expireSession(sess *PortSession, port string) {
 	portsMu.Lock()
 
+	// A concurrent acquire may have already reclaimed this session before
+	// the timer fired — e.g. AcquireForFlasher won portsMu first, flipped
+	// mode to ModeFlasher, and is intentionally leaving sess.flasher alive
+	// for the caller to reuse. This guard MUST run before any flasher
+	// teardown below: closing/nilling sess.flasher here would hand that
+	// racing acquirer a dead handle, losing the cache-reuse optimization
+	// and forcing a needless reconnect (BR-64). Not corruption — mode is
+	// ModePending in the normal case and no user holds the flasher then —
+	// just a narrow lost-reuse window this early return closes.
+	if sess.mode != ModePending {
+		snap := snapshotPorts()
+		portsMu.Unlock()
+		status.Write(snap)
+		return
+	}
+
 	// Capture the no-reset hold BEFORE closeCachedFlasher, which always
 	// clears it — the flag decides which of the two branches below runs.
 	held := sess.noResetOnExpire
@@ -569,15 +585,16 @@ func expireSession(sess *PortSession, port string) {
 		// AcquireForFlasher for this port builds a fresh flasher connection
 		// from scratch rather than reusing anything stale.
 		//
+		// mode is guaranteed ModePending here — the guard above already
+		// returned otherwise — so this always runs, unconditionally.
+		//
 		// Note: this early return does NOT itself close/unregister
 		// sess.timerDone — that happens unconditionally in the deferred
 		// func's own defer in releaseFlasherDeferred, which wraps this
 		// entire call. Every return path out of expireSession (this one
 		// included) unwinds back into that defer.
-		if sess.mode == ModePending {
-			_ = sess.mgr.Stop()
-			delete(ports, port)
-		}
+		_ = sess.mgr.Stop()
+		delete(ports, port)
 		snap := snapshotPorts()
 		portsMu.Unlock()
 		status.Write(snap)
