@@ -45,9 +45,11 @@ test('board-medic agent allowlist references only registered pogopin tools', () 
     .join('\n');
 
   for (const name of referenced) {
+    // Accept either registration form: direct mcp.NewTool(...) or the newTool(...) wrapper.
+    const registered = new RegExp(`(?:mcp\\.NewTool|newTool)\\("${name}"`).test(sources);
     assert.ok(
-      sources.includes(`mcp.NewTool("${name}"`),
-      `agent references tool "${name}" but no mcp.NewTool("${name}",...) found in *_tools.go`
+      registered,
+      `agent references tool "${name}" but no mcp.NewTool("${name}",...) or newTool("${name}",...) found in *_tools.go`
     );
   }
 });

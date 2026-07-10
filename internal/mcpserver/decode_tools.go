@@ -7,7 +7,7 @@ import (
 
 // registerDecodeTools registers backtrace decoding tools.
 func registerDecodeTools(s *server.MCPServer) {
-	decodeTool := mcp.NewTool("decode_backtrace",
+	decodeTool := newTool("decode_backtrace",
 		mcp.WithDescription("Decode an ESP-IDF xtensa or riscv32 panic backtrace against an ELF file. Provide panic_text OR panic_file (one required) plus elf_path."),
 		mcp.WithString("elf_path", mcp.Required(), mcp.Description("path to the ELF file")),
 		mcp.WithString("panic_text", mcp.Description("inline panic text")),
