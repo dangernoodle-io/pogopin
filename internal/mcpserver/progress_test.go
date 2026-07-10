@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"dangernoodle.io/pogopin/internal/esp"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	espflasher "tinygo.org/x/espflasher/pkg/espflasher"
@@ -150,4 +151,115 @@ func TestSendProgressNoServerInContextIsNoop(t *testing.T) {
 	assert.NotPanics(t, func() {
 		send(1, 2, "flashing")
 	})
+}
+
+func TestNVSStatusEmitterByteAndPhaseInterplay(t *testing.T) {
+	var byteCalls, phaseCalls []progressCall
+	byteEmit := func(current, total int, msg string) {
+		byteCalls = append(byteCalls, progressCall{current, total, msg})
+	}
+	phaseEmit := func(current, total int, msg string) {
+		phaseCalls = append(phaseCalls, progressCall{current, total, msg})
+	}
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	// Full NVSSetBatch/NVSDelete orchestration sequence: byte-phase start
+	// ticks (current=0, total=0) are dropped entirely (no bar denominator
+	// yet); the real byte tick that follows drives byteEmit; the three
+	// non-byte phase transitions drive phaseEmit on the fixed ordinal scale.
+	status(esp.StatusPhaseReadingPartition, 0, 0)
+	status(esp.StatusPhaseReadingPartition, 128, 128)
+	status(esp.StatusPhaseParsing, 0, 0)
+	status(esp.StatusPhaseVerifyingCompleteness, 0, 0)
+	status(esp.StatusPhaseWriting, 0, 0)
+	status(esp.StatusPhaseWriting, 4096, 4096)
+	status(esp.StatusPhaseReadingBack, 0, 0)
+	status(esp.StatusPhaseReadingBack, 128, 128)
+	status(esp.StatusPhaseVerifying, 0, 0)
+
+	assert.Equal(t, []progressCall{
+		{128, 128, esp.StatusPhaseReadingPartition},
+		{4096, 4096, esp.StatusPhaseWriting},
+		{128, 128, esp.StatusPhaseReadingBack},
+	}, byteCalls)
+
+	assert.Equal(t, []progressCall{
+		{1, nvsPhaseTotal, esp.StatusPhaseParsing},
+		{2, nvsPhaseTotal, esp.StatusPhaseVerifyingCompleteness},
+		{3, nvsPhaseTotal, esp.StatusPhaseVerifying},
+	}, phaseCalls)
+}
+
+func TestNVSStatusEmitterUnrecognizedNonBytePhaseSkipped(t *testing.T) {
+	var phaseCalls []progressCall
+	phaseEmit := func(current, total int, msg string) {
+		phaseCalls = append(phaseCalls, progressCall{current, total, msg})
+	}
+	status := nvsStatusEmitter(func(int, int, string) {}, phaseEmit)
+
+	status("mystery phase", 0, 0)
+	status(esp.StatusPhaseParsing, 0, 0)
+
+	assert.Equal(t, []progressCall{
+		{1, nvsPhaseTotal, esp.StatusPhaseParsing},
+	}, phaseCalls)
+}
+
+func TestNVSStatusEmitterThrottleInterplayWithRealEmitter(t *testing.T) {
+	// Wire nvsStatusEmitter onto real newProgressEmitter instances (as the
+	// handlers do) to confirm the byte bar still throttles correctly while
+	// phase ticks land on their own distinct ordinal percents.
+	var calls []progressCall
+	send := func(current, total int, msg string) {
+		calls = append(calls, progressCall{current, total, msg})
+	}
+	byteEmit := newProgressEmitter(send)
+	phaseEmit := newProgressEmitter(send)
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	status(esp.StatusPhaseReadingPartition, 0, 0)
+	status(esp.StatusPhaseReadingPartition, 50, 100)
+	status(esp.StatusPhaseReadingPartition, 100, 100)
+	status(esp.StatusPhaseParsing, 0, 0)
+	status(esp.StatusPhaseVerifyingCompleteness, 0, 0)
+
+	assert.Equal(t, []progressCall{
+		{50, 100, esp.StatusPhaseReadingPartition},
+		{100, 100, esp.StatusPhaseReadingPartition},
+		{1, nvsPhaseTotal, esp.StatusPhaseParsing},
+		{2, nvsPhaseTotal, esp.StatusPhaseVerifyingCompleteness},
+	}, calls)
+}
+
+// TestNVSPhaseClassificationCovered guards the coupling the review flagged:
+// nvsPhaseOrdinal and nvsBytePhases are keyed by esp.StatusPhase* constants
+// but matched against esp.go's runtime phase strings only by value, not by
+// the compiler. A future esp.StatusPhase* added without updating either map
+// would otherwise silently fall into nvsStatusEmitter's `!ok` skip branch.
+// This test enumerates every current phase constant explicitly (not by
+// reflection) so that omission is exactly the failure this test catches:
+// forgetting to add a new constant here, or to classify it in one of the two
+// maps, both fail loudly.
+func TestNVSPhaseClassificationCovered(t *testing.T) {
+	allPhases := []string{
+		esp.StatusPhaseReadingPartition,
+		esp.StatusPhaseParsing,
+		esp.StatusPhaseVerifyingCompleteness,
+		esp.StatusPhaseWriting,
+		esp.StatusPhaseReadingBack,
+		esp.StatusPhaseVerifying,
+	}
+
+	for _, phase := range allPhases {
+		_, isByte := nvsBytePhases[phase]
+		_, isOrdinal := nvsPhaseOrdinal[phase]
+		assert.True(t, isByte != isOrdinal,
+			"phase %q must be classified in exactly one of nvsBytePhases/nvsPhaseOrdinal (byte=%v, ordinal=%v)",
+			phase, isByte, isOrdinal)
+	}
+
+	assert.Len(t, nvsBytePhases, 3)
+	assert.Len(t, nvsPhaseOrdinal, 3)
+	assert.Equal(t, len(allPhases), len(nvsBytePhases)+len(nvsPhaseOrdinal),
+		"every esp.StatusPhase* constant must be classified exactly once")
 }

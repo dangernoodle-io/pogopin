@@ -10,6 +10,57 @@ import (
 	"tinygo.org/x/espflasher/pkg/nvs"
 )
 
+// StatusFunc reports a transport-neutral, phase-labeled status tick for a
+// long-running esp operation. phase is a short human-readable step label
+// ("reading partition", "parsing", "writing", ...); current/total carry
+// real byte progress when the step has a byte denominator, or (0, 0) for a
+// step that's just a discrete phase transition with no bar to fill. This
+// type carries no MCP (or any transport) dependency so it's directly
+// reusable by a future standalone CLI adapter — callers pass nil to opt out
+// entirely, which every function accepting a StatusFunc treats identically
+// to today's silent no-op behavior.
+type StatusFunc func(phase string, current, total int)
+
+// Status phase names emitted through StatusFunc. These are the single
+// source of truth for phase labels — callers that classify or order phases
+// (e.g. internal/mcpserver's nvsPhaseOrdinal) must key off these constants,
+// not duplicate string literals, so a new phase added here can't silently
+// fall through an unmatched classification elsewhere.
+const (
+	StatusPhaseReadingPartition      = "reading partition"
+	StatusPhaseParsing               = "parsing"
+	StatusPhaseVerifyingCompleteness = "verifying completeness"
+	StatusPhaseWriting               = "writing"
+	StatusPhaseReadingBack           = "reading back"
+	StatusPhaseVerifying             = "verifying"
+)
+
+// emitStatus is a nil-safe StatusFunc invocation helper for a discrete
+// phase-transition tick with no byte denominator (current=0, total=0).
+// Byte-denominated phases instead wire statusProgress directly onto the
+// operation's real progress callback.
+func emitStatus(status StatusFunc, phase string) {
+	if status == nil {
+		return
+	}
+	status(phase, 0, 0)
+}
+
+// statusProgress adapts a StatusFunc into a byte-progress callback
+// (compatible with both espflasher.ProgressFunc and FlashESP's own
+// progress parameter, which share the same underlying func(int, int)
+// signature) that forwards current/total under a fixed phase label.
+// Returns nil when status is nil, so it can be passed straight through
+// nil-safe progress parameters unchanged.
+func statusProgress(status StatusFunc, phase string) func(current, total int) {
+	if status == nil {
+		return nil
+	}
+	return func(current, total int) {
+		status(phase, current, total)
+	}
+}
+
 // FlasherFactory creates an espflasher instance. Injected for testing.
 type FlasherFactory func(port string, opts *espflasher.FlasherOptions) (Flasher, error)
 
@@ -479,13 +530,17 @@ func ReadFlashData(factory FlasherFactory, port string, offset, size uint32, bau
 	}, nil
 }
 
-// ReadNVS reads and parses NVS entries from an ESP device.
-func ReadNVS(factory FlasherFactory, port string, offset, size uint32, baudRate int, namespace string, resetMode string) ([]nvs.Entry, error) {
-	result, err := ReadFlashData(factory, port, offset, size, baudRate, resetMode, nil)
+// ReadNVS reads and parses NVS entries from an ESP device. status, if
+// non-nil, receives "reading partition" (with real byte progress) then
+// "parsing" phase ticks.
+func ReadNVS(factory FlasherFactory, port string, offset, size uint32, baudRate int, namespace string, resetMode string, status StatusFunc) ([]nvs.Entry, error) {
+	emitStatus(status, StatusPhaseReadingPartition)
+	result, err := ReadFlashData(factory, port, offset, size, baudRate, resetMode, statusProgress(status, StatusPhaseReadingPartition))
 	if err != nil {
 		return nil, fmt.Errorf("read flash: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseParsing)
 	entries, err := nvs.ParseNVS(result.Data)
 	if err != nil {
 		return nil, fmt.Errorf("parse NVS: %w", err)
@@ -505,8 +560,10 @@ func ReadNVS(factory FlasherFactory, port string, offset, size uint32, baudRate 
 	return entries, nil
 }
 
-// WriteNVS generates an NVS binary from entries and flashes it to the device.
-func WriteNVS(factory FlasherFactory, port string, entries []nvs.Entry, offset, size uint32, baudRate int, resetMode string) error {
+// WriteNVS generates an NVS binary from entries and flashes it to the
+// device. status, if non-nil, receives "writing" phase ticks with real byte
+// progress as the partition is flashed.
+func WriteNVS(factory FlasherFactory, port string, entries []nvs.Entry, offset, size uint32, baudRate int, resetMode string, status StatusFunc) error {
 	data, err := nvs.GenerateNVS(entries, int(size))
 	if err != nil {
 		return fmt.Errorf("generate NVS: %w", err)
@@ -525,9 +582,10 @@ func WriteNVS(factory FlasherFactory, port string, entries []nvs.Entry, offset, 
 	}
 	_ = tmpFile.Close()
 
+	emitStatus(status, StatusPhaseWriting)
 	_, err = FlashESP(factory, port, []ImageSpec{
 		{Path: tmpFile.Name(), Offset: offset},
-	}, FlashOptions{BaudRate: baudRate, ResetMode: resetMode}, nil)
+	}, FlashOptions{BaudRate: baudRate, ResetMode: resetMode}, statusProgress(status, StatusPhaseWriting))
 	return err
 }
 
@@ -540,10 +598,10 @@ type NVSWriteResult struct {
 }
 
 // NVSSet reads the current NVS, sets/updates a single key, and writes back.
-func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, value interface{}, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
+func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, value interface{}, offset, size uint32, baudRate int, resetMode string, status StatusFunc) (NVSWriteResult, error) {
 	return NVSSetBatch(factory, port, []NVSUpdate{
 		{Namespace: namespace, Key: key, Type: typ, Value: value},
-	}, offset, size, baudRate, resetMode)
+	}, offset, size, baudRate, resetMode, status)
 }
 
 // NVSDelete reads the current NVS, removes a key or namespace, and writes back
@@ -556,7 +614,11 @@ func NVSSet(factory FlasherFactory, port string, namespace, key, typ string, val
 // flashed. After the write, the partition is re-read and re-parsed so the
 // reported result reflects what the device actually holds, not what was
 // merely requested.
-func NVSDelete(factory FlasherFactory, port string, namespace, key string, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
+//
+// status, if non-nil, receives a phase tick per orchestration step:
+// "reading partition" (bytes) -> "parsing" -> "verifying completeness" ->
+// "writing" (bytes) -> "reading back" (bytes) -> "verifying".
+func NVSDelete(factory FlasherFactory, port string, namespace, key string, offset, size uint32, baudRate int, resetMode string, status StatusFunc) (NVSWriteResult, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -578,16 +640,19 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 	}()
 
 	// Read current NVS
-	data, err := f.ReadFlash(offset, size, nil)
+	emitStatus(status, StatusPhaseReadingPartition)
+	data, err := f.ReadFlash(offset, size, statusProgress(status, StatusPhaseReadingPartition))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("read NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseParsing)
 	entries, err := nvs.ParseNVS(data)
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("parse NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseVerifyingCompleteness)
 	if err := verifyLosslessParse(data, entries); err != nil {
 		return NVSWriteResult{}, err
 	}
@@ -614,14 +679,16 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 		return NVSWriteResult{}, fmt.Errorf("generate NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseWriting)
 	err = f.FlashImages([]espflasher.ImagePart{
 		{Data: newData, Offset: offset},
-	}, func(current, total int) {})
+	}, statusProgress(status, StatusPhaseWriting))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("write NVS: %w", err)
 	}
 
-	verifyData, err := f.ReadFlash(offset, size, nil)
+	emitStatus(status, StatusPhaseReadingBack)
+	verifyData, err := f.ReadFlash(offset, size, statusProgress(status, StatusPhaseReadingBack))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("post-write verify: read back NVS: %w", err)
 	}
@@ -630,6 +697,7 @@ func NVSDelete(factory FlasherFactory, port string, namespace, key string, offse
 		return NVSWriteResult{}, fmt.Errorf("post-write verify: parse NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseVerifying)
 	deleted, err := verifyDeleteApplied(entries, postEntries, namespace, key)
 	if err != nil {
 		return NVSWriteResult{}, err
@@ -655,7 +723,11 @@ type NVSUpdate struct {
 // flashed. After the write, the partition is re-read and re-parsed so the
 // reported result reflects what the device actually holds, not what was
 // merely requested.
-func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offset, size uint32, baudRate int, resetMode string) (NVSWriteResult, error) {
+//
+// status, if non-nil, receives a phase tick per orchestration step:
+// "reading partition" (bytes) -> "parsing" -> "verifying completeness" ->
+// "writing" (bytes) -> "reading back" (bytes) -> "verifying".
+func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offset, size uint32, baudRate int, resetMode string, status StatusFunc) (NVSWriteResult, error) {
 	if baudRate == 0 {
 		baudRate = 115200
 	}
@@ -677,16 +749,19 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 	}()
 
 	// Read current NVS
-	data, err := f.ReadFlash(offset, size, nil)
+	emitStatus(status, StatusPhaseReadingPartition)
+	data, err := f.ReadFlash(offset, size, statusProgress(status, StatusPhaseReadingPartition))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("read NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseParsing)
 	entries, err := nvs.ParseNVS(data)
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("parse NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseVerifyingCompleteness)
 	if err := verifyLosslessParse(data, entries); err != nil {
 		return NVSWriteResult{}, err
 	}
@@ -721,14 +796,16 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 	}
 
 	// Write back in same session
+	emitStatus(status, StatusPhaseWriting)
 	err = f.FlashImages([]espflasher.ImagePart{
 		{Data: newData, Offset: offset},
-	}, func(current, total int) {})
+	}, statusProgress(status, StatusPhaseWriting))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("write NVS: %w", err)
 	}
 
-	verifyData, err := f.ReadFlash(offset, size, nil)
+	emitStatus(status, StatusPhaseReadingBack)
+	verifyData, err := f.ReadFlash(offset, size, statusProgress(status, StatusPhaseReadingBack))
 	if err != nil {
 		return NVSWriteResult{}, fmt.Errorf("post-write verify: read back NVS: %w", err)
 	}
@@ -737,6 +814,7 @@ func NVSSetBatch(factory FlasherFactory, port string, updates []NVSUpdate, offse
 		return NVSWriteResult{}, fmt.Errorf("post-write verify: parse NVS: %w", err)
 	}
 
+	emitStatus(status, StatusPhaseVerifying)
 	applied, err := verifySetApplied(preEntries, postEntries, updates)
 	if err != nil {
 		return NVSWriteResult{}, err

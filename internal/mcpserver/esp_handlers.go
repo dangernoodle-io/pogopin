@@ -475,7 +475,7 @@ func handleReadNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	namespace, _ := req.GetArguments()["namespace"].(string)
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	entries, err := esp.ReadNVS(factory, port, offset, size, baudRate, namespace, resetMode)
+	entries, err := esp.ReadNVS(factory, port, offset, size, baudRate, namespace, resetMode, nil)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -489,6 +489,59 @@ func handleReadNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolR
 	}
 
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// nvsBytePhases is the set of esp.StatusFunc phases that carry real
+// current/total byte progress (esp.ReadNVS/WriteNVS/NVSSetBatch/NVSDelete's
+// "reading partition", "writing", "reading back" steps). nvsStatusEmitter
+// classifies a tick as byte-denominated at runtime via total>0, so this set
+// isn't consulted on the hot path — it exists so TestNVSPhaseClassificationCovered
+// can assert every esp.StatusPhase* constant is classified exactly once,
+// either here or in nvsPhaseOrdinal, never in neither or both.
+var nvsBytePhases = map[string]struct{}{
+	esp.StatusPhaseReadingPartition: {},
+	esp.StatusPhaseWriting:          {},
+	esp.StatusPhaseReadingBack:      {},
+}
+
+// nvsPhaseOrdinal fixes each non-byte esp.StatusFunc phase from the NVS
+// read-modify-write orchestration (esp.WriteNVS/NVSSetBatch/NVSDelete) to a
+// step on a 6-step bar, in the order those steps actually fire. Byte phases
+// (nvsBytePhases) carry a real current/total instead and skip this map
+// entirely — see nvsStatusEmitter.
+var nvsPhaseOrdinal = map[string]int{
+	esp.StatusPhaseParsing:               1,
+	esp.StatusPhaseVerifyingCompleteness: 2,
+	esp.StatusPhaseVerifying:             3,
+}
+
+const nvsPhaseTotal = 3
+
+// nvsStatusEmitter adapts an esp.StatusFunc onto two independent progress
+// emitters: byteEmit drives the numeric bar with real bytes during the
+// byte-denominated phases ("reading partition", "writing", "reading back");
+// phaseEmit renders the non-byte phase transitions ("parsing", "verifying
+// completeness", "verifying") on a fixed ordinal/3 scale so their message
+// text still surfaces instead of being dropped by newProgressEmitter's
+// total<=0 guard. Two separate emitter instances are required here for the
+// same reason connect-phase and op-progress use separate instances (see
+// connectStatusEmitter's doc comment): byte totals and phase ordinals are
+// two different, non-monotonic scales on the same token.
+func nvsStatusEmitter(byteEmit, phaseEmit func(current, total int, msg string)) esp.StatusFunc {
+	return func(phase string, current, total int) {
+		if total > 0 {
+			byteEmit(current, total, phase)
+			return
+		}
+		ordinal, ok := nvsPhaseOrdinal[phase]
+		if !ok {
+			// A byte phase's own start tick (current=0, total=0, emitted
+			// before the real byte callback fires) or an unrecognized
+			// phase: skip rather than emit a spurious 0/3 tick.
+			return
+		}
+		phaseEmit(ordinal, nvsPhaseTotal, phase)
+	}
 }
 
 func handleWriteNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -545,7 +598,11 @@ func handleWriteNVS(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallTool
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	err = esp.WriteNVS(factory, port, entries, offset, size, baudRate, resetMode)
+	byteEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	phaseEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	err = esp.WriteNVS(factory, port, entries, offset, size, baudRate, resetMode, status)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -611,7 +668,11 @@ func handleNVSSet(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolRe
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	writeResult, err := esp.NVSSetBatch(factory, port, updates, offset, size, baudRate, resetMode)
+	byteEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	phaseEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	writeResult, err := esp.NVSSetBatch(factory, port, updates, offset, size, baudRate, resetMode, status)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
@@ -650,7 +711,11 @@ func handleNVSDelete(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToo
 	offset, size, baudRate := parseNVSParams(req.GetArguments())
 	resetMode, _ := req.GetArguments()["reset_mode"].(string)
 
-	writeResult, err := esp.NVSDelete(factory, port, namespace, key, offset, size, baudRate, resetMode)
+	byteEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	phaseEmit := newProgressEmitter(sendProgress(ctx, progressToken(req)))
+	status := nvsStatusEmitter(byteEmit, phaseEmit)
+
+	writeResult, err := esp.NVSDelete(factory, port, namespace, key, offset, size, baudRate, resetMode, status)
 	if err != nil {
 		if syncResult := handleSyncError(err); syncResult != nil {
 			return syncResult, nil
