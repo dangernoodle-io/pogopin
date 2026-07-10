@@ -11,3 +11,26 @@ jobs:
   verify:
     uses: dangernoodle-io/.github/.github/workflows/go-build.yml@main
     secrets: inherit
+
+  hwbench-check:
+    # Compile-checks the hwtest-tagged hardware-integration harness (build +
+    # vet + lint) with no hardware attached, so a compile break or mcp-go
+    # API drift surfaces on every PR instead of only on a scarce one-shot
+    # hardware run. Standalone job — this repo has no aggregating "summary"
+    # job to gate on, so making this a REQUIRED merge check needs a
+    # separate branch-protection ruleset update (out of band).
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - run: go build -tags hwtest ./...
+      - run: go vet -tags hwtest ./...
+      - name: Lint (hwtest tag)
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --build-tags hwtest ./...
