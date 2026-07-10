@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
@@ -117,5 +119,115 @@ func TestMockGPIOInProcess(t *testing.T) {
 		tc, ok := res.Content[0].(mcp.TextContent)
 		require.True(t, ok)
 		assert.Contains(t, tc.Text, "reserved")
+	})
+}
+
+// TestMockSerialMonitorInProcess drives the real serial_start/read/write/
+// stop handlers -> session -> serial.Manager -> internal/mockhw's
+// virtualMonitorPort, in-process (no subprocess, no hardware). Companion
+// to TestMockGPIOInProcess/TestMockBench for BR-66 PR2 (the monitor path,
+// as opposed to the ROM-loader/flasher path those exercise).
+//
+// Deliberately does NOT call setupTestManagersFunc: that helper (used by
+// TestMockGPIOInProcess, which never starts the monitor) rewires
+// session.newManagerFunc to a plain, unmocked manager, which would stomp
+// the fifth seam mockhw.Install just wired. Only setupTestPorts is needed
+// here; mockhw.Install itself supplies the manager factory.
+//
+// Gated on ACC_POGOPIN (mirrors TF_ACC) so it skips in a plain
+// `go test ./...` run; `make mcp-mock` / `make acc` set the env var
+// themselves. Must not run in parallel with other mcpserver tests that
+// assume production openers or a fresh hardware-tier gate.
+func TestMockSerialMonitorInProcess(t *testing.T) {
+	if os.Getenv("ACC_POGOPIN") == "" {
+		t.Skip("ACC_POGOPIN not set — skipping hardware-free virtual-chip integration test")
+	}
+
+	t.Cleanup(mockhw.Install())
+	setupTestPorts(t)
+
+	port := mockhw.MockPortName
+
+	// serialReadTextContaining polls serial_read (handleSerialRead runs
+	// against the live ring buffer, which the manager's readLoop goroutine
+	// fills asynchronously) until want appears or the timeout elapses,
+	// guarding against the inherent goroutine-scheduling race between
+	// starting/writing the port and the readLoop draining
+	// virtualMonitorPort's outbound queue.
+	serialReadTextContaining := func(t *testing.T, want string) string {
+		t.Helper()
+		var text string
+		require.Eventually(t, func() bool {
+			readReq := mcp.CallToolRequest{}
+			readReq.Params.Arguments = map[string]interface{}{
+				"port": port,
+			}
+			readRes, err := handleSerialRead(context.Background(), readReq)
+			if err != nil || readRes == nil || readRes.IsError {
+				return false
+			}
+			tc, ok := readRes.Content[0].(mcp.TextContent)
+			if !ok {
+				return false
+			}
+			text = tc.Text
+			return strings.Contains(text, want)
+		}, 2*time.Second, 10*time.Millisecond, "serial_read never observed %q", want)
+		return text
+	}
+
+	t.Run("serial_start_returns_boot_banner_on_read", func(t *testing.T) {
+		startReq := mcp.CallToolRequest{}
+		startReq.Params.Arguments = map[string]interface{}{
+			"port": port,
+		}
+		startRes, err := handleSerialStart(context.Background(), startReq)
+		require.NoError(t, err)
+		require.NotNil(t, startRes)
+		require.False(t, startRes.IsError, "serial_start returned error")
+
+		serialReadTextContaining(t, "mock-esp32: virtual chip ready")
+	})
+
+	t.Run("serial_write_loopback_captured_exact", func(t *testing.T) {
+		writeReq := mcp.CallToolRequest{}
+		writeReq.Params.Arguments = map[string]interface{}{
+			"port": port,
+			"data": "PING-mock-integration",
+		}
+		writeRes, err := handleSerialWrite(context.Background(), writeReq)
+		require.NoError(t, err)
+		require.NotNil(t, writeRes)
+		require.False(t, writeRes.IsError, "serial_write returned error")
+
+		serialReadTextContaining(t, "PING-mock-integration")
+	})
+
+	t.Run("serial_stop_then_status_reports_not_open", func(t *testing.T) {
+		stopReq := mcp.CallToolRequest{}
+		stopReq.Params.Arguments = map[string]interface{}{
+			"port": port,
+		}
+		stopRes, err := handleSerialStop(context.Background(), stopReq)
+		require.NoError(t, err)
+		require.NotNil(t, stopRes)
+		require.False(t, stopRes.IsError, "serial_stop returned error")
+
+		// serial_stop tears the port session down entirely
+		// (session.StopSession removes it from the ports map), so a
+		// subsequent serial_status by name errors rather than reporting
+		// running=false -- there's no session left to report status for.
+		statusReq := mcp.CallToolRequest{}
+		statusReq.Params.Arguments = map[string]interface{}{
+			"port": port,
+		}
+		statusRes, err := handleSerialStatus(context.Background(), statusReq)
+		require.NoError(t, err)
+		require.NotNil(t, statusRes)
+		assert.True(t, statusRes.IsError, "serial_status expected an error after serial_stop, got success")
+
+		tc, ok := statusRes.Content[0].(mcp.TextContent)
+		require.True(t, ok)
+		assert.Contains(t, tc.Text, "no serial port open")
 	})
 }

@@ -33,4 +33,5 @@ func TestMockBench(t *testing.T) {
 	h := newHarnessWithBinary(t, bin, mockhw.MockPortName, profile)
 
 	runGPIOScenarios(t, h)
+	runSerialMonitorScenarios(t, h)
 }

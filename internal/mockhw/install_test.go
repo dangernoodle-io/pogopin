@@ -15,12 +15,13 @@ import (
 var errSentinel = errors.New("sentinel: seam not wired")
 
 // TestInstallWiresSeamsAndRestore drives mockhw.Install directly: it pins
-// each of the four seams (session.serialOpen, serial.listPortsFn,
-// session.isUSBPortFn, session.listPortsFn) to a distinguishable sentinel,
-// calls Install, asserts each seam now exhibits the mock-chip behavior
-// Install documents, then calls the returned restore closure and asserts
-// every seam is back to the sentinel that was in place before Install ran.
-// t.Cleanup restores the true pre-test seam values regardless of outcome.
+// each of the five seams (session.serialOpen, serial.listPortsFn,
+// session.isUSBPortFn, session.listPortsFn, session.newManagerFunc) to a
+// distinguishable sentinel, calls Install, asserts each seam now exhibits
+// the mock-chip behavior Install documents, then calls the returned
+// restore closure and asserts every seam is back to the sentinel that was
+// in place before Install ran. t.Cleanup restores the true pre-test seam
+// values regardless of outcome.
 func TestInstallWiresSeamsAndRestore(t *testing.T) {
 	sentinelOpen := func(string, *goSerial.Mode) (goSerial.Port, error) { return nil, errSentinel }
 	origOpen := session.SetSerialOpenFn(sentinelOpen)
@@ -37,6 +38,14 @@ func TestInstallWiresSeamsAndRestore(t *testing.T) {
 	sentinelSessionListPorts := func() ([]serial.PortInfo, error) { return nil, errSentinel }
 	origSessionListPorts := session.SetListPortsFn(sentinelSessionListPorts)
 	t.Cleanup(func() { session.SetListPortsFn(origSessionListPorts) })
+
+	sentinelNewManagerFunc := func(int) *serial.Manager {
+		m := serial.NewManagerWithBufferSize(1)
+		m.OpenFunc = func(string, *goSerial.Mode) (goSerial.Port, error) { return nil, errSentinel }
+		return m
+	}
+	origNewManagerFunc := session.SetNewManagerFunc(sentinelNewManagerFunc)
+	t.Cleanup(func() { session.SetNewManagerFunc(origNewManagerFunc) })
 
 	restore := Install()
 
@@ -59,6 +68,13 @@ func TestInstallWiresSeamsAndRestore(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, mockPorts, ports)
 
+	installedNewManagerFunc := session.SetNewManagerFunc(sentinelNewManagerFunc)
+	mgr := installedNewManagerFunc(1)
+	monitorPort, err := mgr.OpenFunc("/dev/anything", &goSerial.Mode{})
+	require.NoError(t, err)
+	_, ok = monitorPort.(*virtualMonitorPort)
+	assert.True(t, ok, "Install must wire session.newManagerFunc's OpenFunc to newVirtualMonitorPort")
+
 	restore()
 
 	restoredOpen := session.SetSerialOpenFn(sentinelOpen)
@@ -74,5 +90,10 @@ func TestInstallWiresSeamsAndRestore(t *testing.T) {
 
 	restoredSessionListPorts := session.SetListPortsFn(sentinelSessionListPorts)
 	_, err = restoredSessionListPorts()
+	assert.ErrorIs(t, err, errSentinel, "restore must put back the pre-Install seam")
+
+	restoredNewManagerFunc := session.SetNewManagerFunc(sentinelNewManagerFunc)
+	restoredMgr := restoredNewManagerFunc(1)
+	_, err = restoredMgr.OpenFunc("", nil)
 	assert.ErrorIs(t, err, errSentinel, "restore must put back the pre-Install seam")
 }

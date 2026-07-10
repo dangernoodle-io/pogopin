@@ -79,8 +79,10 @@ Each is a `t.Run` subtest under `TestHWBench`:
 
 ## Hardware-free mock lane
 
-`TestMockBench` (`mock_test.go`) runs the same `runGPIOScenarios` suite as
-`TestHWBench` (shared via `bench_common_test.go`) against
+`TestMockBench` (`mock_test.go`) runs the `runGPIOScenarios` suite
+`TestHWBench` also runs (shared via `bench_common_test.go`), plus
+`runSerialMonitorScenarios` (serial_start/read/write/stop against a
+synthetic boot banner + write/read loopback — BR-66 PR2), against
 `internal/mockhw`'s virtual ESP32-S2 chip instead of a physical board —
 same stdio wire-protocol path (`mcp-go` client, real `pogo server`
 subprocess), no board attached. It complements the hardware lane above; it
@@ -118,11 +120,12 @@ make acc
 | `ACC_POGOPIN_BOARD` | no | `s2` | Selects the board profile (same table as the hardware lane above). |
 | `ACC_POGOPIN_BIN` | no | — | Path to a pre-built `-tags mock` `pogo` binary. Unset = build one from the repo root with the `mock` tag. |
 
-`TestMockGPIOInProcess` (`internal/mcpserver/mock_integration_test.go`) is
-a sibling test in a different package — an in-process test (no
-subprocess) that drives the real MCP tool handlers directly against the
-virtual chip, exercising the actual espflasher/session code path at a
-lower level than this package's wire-protocol bench.
+`TestMockGPIOInProcess` and `TestMockSerialMonitorInProcess`
+(`internal/mcpserver/mock_integration_test.go`) are sibling tests in a
+different package — in-process tests (no subprocess) that drive the real
+MCP tool handlers directly against the virtual chip, exercising the actual
+espflasher/session (GPIO) and session/serial.Manager (monitor) code paths
+at a lower level than this package's wire-protocol bench.
 
 CI runs both mock-lane suites, plus `hwbench-check` (the `hwtest`-tagged
 compile check above), as separate jobs — see `mock-bench` and
