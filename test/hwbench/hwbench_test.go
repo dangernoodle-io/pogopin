@@ -50,4 +50,6 @@ func TestHWBench(t *testing.T) {
 	h := newHarness(t, port, profile)
 
 	runGPIOScenarios(t, h)
+	runSecurityInfoScenario(t, h)
+	runChipIdentityScenario(t, h)
 }

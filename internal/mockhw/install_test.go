@@ -50,10 +50,14 @@ func TestInstallWiresSeamsAndRestore(t *testing.T) {
 	restore := Install()
 
 	installedOpen := session.SetSerialOpenFn(sentinelOpen)
-	port, err := installedOpen("/dev/anything", &goSerial.Mode{})
+	port, err := installedOpen(MockPortNameS2, &goSerial.Mode{})
 	require.NoError(t, err)
-	_, ok := port.(*virtualPort)
+	vp, ok := port.(*virtualPort)
 	assert.True(t, ok, "Install must wire session.serialOpen to newVirtualPort")
+	assert.Same(t, profileESP32S2, vp.profile, "known port name must resolve to its chipProfile")
+
+	_, err = installedOpen("/dev/unknown", &goSerial.Mode{})
+	assert.Error(t, err, "an unrecognized mock port name must fail loud, not fall back to a default profile")
 
 	installedServerListPorts := serial.SetListPortsFn(sentinelListPorts)
 	ports, err := installedServerListPorts()
@@ -96,4 +100,36 @@ func TestInstallWiresSeamsAndRestore(t *testing.T) {
 	restoredMgr := restoredNewManagerFunc(1)
 	_, err = restoredMgr.OpenFunc("", nil)
 	assert.ErrorIs(t, err, errSentinel, "restore must put back the pre-Install seam")
+}
+
+// TestProfileByPort table-tests the port-name -> chipProfile map directly:
+// every known mock port name resolves to its documented profile, and an
+// unknown port name is absent (SerialOpenFn's error path relies on this).
+func TestProfileByPort(t *testing.T) {
+	cases := []struct {
+		port    string
+		profile *chipProfile
+	}{
+		{MockPortNameS2, profileESP32S2},
+		{MockPortNameC3, profileESP32C3},
+		{MockPortNameS3, profileESP32S3},
+		{MockPortNameESP32, profileESP32},
+	}
+
+	for _, c := range cases {
+		t.Run(c.port, func(t *testing.T) {
+			got, ok := profileByPort[c.port]
+			require.True(t, ok, "known mock port must be present in profileByPort")
+			assert.Same(t, c.profile, got)
+		})
+	}
+
+	_, ok := profileByPort["/dev/unknown"]
+	assert.False(t, ok, "unrecognized port name must not resolve to any profile")
+
+	assert.Len(t, mockPorts, len(profileByPort), "mockPorts must list every profileByPort entry exactly once")
+	for _, p := range mockPorts {
+		_, ok := profileByPort[p.Name]
+		assert.True(t, ok, "every mockPorts entry must have a matching profileByPort entry: %s", p.Name)
+	}
 }

@@ -1,11 +1,13 @@
 // TestMockBench drives the pogopin MCP server over its real stdio wire
-// protocol against internal/mockhw's virtual ESP32-S2 chip — the same
-// scenarios TestHWBench (hwbench_test.go, hardware-gated) runs against real
-// silicon, run here hardware-free. Gated on ACC_POGOPIN (acceptance-test
-// convention, mirrors TF_ACC) so it skips in a plain `go test ./...` run;
-// `make mock-bench` / `make acc` set the env var themselves. Untagged (no
-// hwtest tag needed — the mock server binary is built explicitly below,
-// with the `mock` build tag, independent of this test binary's own tags).
+// protocol against internal/mockhw's virtual chip for the selected board's
+// chip family (BR-66 PR3: ESP32, ESP32-S2, ESP32-C3, ESP32-S3 all have a
+// mock profile) — the same scenarios TestHWBench (hwbench_test.go,
+// hardware-gated) runs against real silicon, run here hardware-free. Gated
+// on ACC_POGOPIN (acceptance-test convention, mirrors TF_ACC) so it skips
+// in a plain `go test ./...` run; `make mock-bench` / `make acc` set the
+// env var themselves. Untagged (no hwtest tag needed — the mock server
+// binary is built explicitly below, with the `mock` build tag, independent
+// of this test binary's own tags).
 package hwbench
 
 import (
@@ -13,8 +15,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-
-	"dangernoodle.io/pogopin/internal/mockhw"
 )
 
 func TestMockBench(t *testing.T) {
@@ -28,10 +28,13 @@ func TestMockBench(t *testing.T) {
 	}
 	profile, ok := lookupProfile(boardKey)
 	require.True(t, ok, "unknown ACC_POGOPIN_BOARD %q", boardKey)
+	require.NotEmpty(t, profile.MockPort, "board %q has no mockhw MockPort mapping", boardKey)
 
 	bin := resolveBinary(t, "ACC_POGOPIN_BIN", []string{"mock"})
-	h := newHarnessWithBinary(t, bin, mockhw.MockPortName, profile)
+	h := newHarnessWithBinary(t, bin, profile.MockPort, profile)
 
 	runGPIOScenarios(t, h)
+	runSecurityInfoScenario(t, h)
+	runChipIdentityScenario(t, h)
 	runSerialMonitorScenarios(t, h)
 }

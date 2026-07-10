@@ -138,10 +138,14 @@ func (v *virtualPort) dispatch(req []byte) []byte {
 		value = 0 // "not a stub"
 
 	case opSecurityInfoReg:
-		// Force detectChip to fall through to the chip-magic path: forces
-		// a non-zero status so espflasher's securityInfo() fails for both
-		// the 20- and 12-byte payload attempts.
-		respData = []byte{0x01, 0x00}
+		if v.profile.securityInfoOK {
+			respData = securityInfoPayload(v.profile.chipID)
+		} else {
+			// Force detectChip to fall through to the chip-magic path:
+			// forces a non-zero status so espflasher's securityInfo()
+			// fails for both the 20- and 12-byte payload attempts.
+			respData = []byte{0x01, 0x00}
+		}
 
 	case opReadReg:
 		if len(data) >= 4 {
@@ -171,4 +175,26 @@ func (v *virtualPort) dispatch(req []byte) []byte {
 	binary.LittleEndian.PutUint32(pkt[4:8], value)
 	copy(pkt[8:], respData)
 	return pkt
+}
+
+// securityInfoAPIVersion is the mock GET_SECURITY_INFO response's
+// APIVersion field value (espflasher's SecurityInfo.APIVersion, offset
+// [16:20] of the 20-byte payload).
+const securityInfoAPIVersion uint32 = 1
+
+// securityInfoPayload builds a mock GET_SECURITY_INFO (opcode 0x14)
+// success response: 20-byte payload (espflasher's security_info.go 20-byte
+// layout — Flags u32[0:4], B1..B8 u8[4:12], ChipID u32[12:16], APIVersion
+// u32[16:20]) followed by the 2-byte OK status espflasher's checkCommand
+// expects immediately after respDataLen bytes of data. Flags/B1-B8 are
+// zeroed (no secure-boot/flash-encryption state modeled); chipID matches
+// the requesting chip's espflasher ImageChipID (5 for C3, 9 for S3) so
+// detectChip's ChipID-based match succeeds.
+func securityInfoPayload(chipID uint32) []byte {
+	payload := make([]byte, 22)
+	binary.LittleEndian.PutUint32(payload[12:16], chipID)
+	binary.LittleEndian.PutUint32(payload[16:20], securityInfoAPIVersion)
+	payload[20] = 0x00 // status OK
+	payload[21] = 0x00
+	return payload
 }

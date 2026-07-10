@@ -49,6 +49,76 @@ func TestVirtualPortAgainstRealEspflasher(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// TestVirtualPortMultiChip drives real espflasher (SkipStub, register-only
+// path) against each non-S2 profile in turn: ESP32 (classic) and ESP32-S2
+// are magic-detected (proven by S2's test above; ESP32 shares the same
+// detection path with a different magic value), while ESP32-C3 and
+// ESP32-S3 have no magic value and are detected purely via the
+// GET_SECURITY_INFO ChipID path (espflasher's UsesMagicValue:false) — a
+// successful ChipName() for those two IS the security-info-detection
+// assertion. Each case also drives a GPIO set/read round trip using that
+// chip's own OUT/IN register addresses, proving chip.go's per-chip
+// register layout (not just S2's) is wired correctly end to end.
+func TestVirtualPortMultiChip(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile *chipProfile
+		port    string
+		chip    string
+		gpioPin int
+	}{
+		{"ESP32", profileESP32, MockPortNameESP32, "ESP32", 16},
+		{"ESP32-C3", profileESP32C3, MockPortNameC3, "ESP32-C3", 3},
+		{"ESP32-S3", profileESP32S3, MockPortNameS3, "ESP32-S3", 4},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := espflasher.DefaultOptions()
+			opts.ChipType = espflasher.ChipAuto
+			opts.ResetMode = espflasher.ResetNoReset
+			opts.SkipStub = true
+			opts.SerialOpener = func(string, *serial.Mode) (serial.Port, error) {
+				return newVirtualPort(tc.profile), nil
+			}
+
+			f, err := espflasher.New(tc.port, opts)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = f.Close() })
+
+			assert.Equal(t, tc.chip, f.ChipName())
+
+			require.NoError(t, f.SetGPIO(tc.gpioPin, true))
+			level, err := f.ReadGPIO(tc.gpioPin)
+			require.NoError(t, err)
+			assert.True(t, level)
+
+			require.NoError(t, f.SetGPIO(tc.gpioPin, false))
+			level, err = f.ReadGPIO(tc.gpioPin)
+			require.NoError(t, err)
+			assert.False(t, level)
+		})
+	}
+}
+
+// TestSecurityInfoPayload table-tests securityInfoPayload's byte layout
+// directly against espflasher's documented 20-byte GET_SECURITY_INFO
+// response shape (security_info.go: Flags u32[0:4], B1..B8 u8[4:12],
+// ChipID u32[12:16], APIVersion u32[16:20]), plus the trailing 2-byte OK
+// status dispatch appends after respDataLen bytes of data.
+func TestSecurityInfoPayload(t *testing.T) {
+	for _, chipID := range []uint32{5, 9} {
+		payload := securityInfoPayload(chipID)
+		require.Len(t, payload, 22)
+
+		assert.Equal(t, uint32(0), binary.LittleEndian.Uint32(payload[0:4]), "Flags")
+		assert.Equal(t, []byte{0, 0, 0, 0, 0, 0, 0, 0}, payload[4:12], "B1..B8")
+		assert.Equal(t, chipID, binary.LittleEndian.Uint32(payload[12:16]), "ChipID")
+		assert.Equal(t, securityInfoAPIVersion, binary.LittleEndian.Uint32(payload[16:20]), "APIVersion")
+		assert.Equal(t, []byte{0x00, 0x00}, payload[20:22], "trailing OK status")
+	}
+}
+
 // TestVirtualPortInterfaceCompliance pins down that virtualPort implements
 // the full serial.Port surface at compile time (also asserted as a package
 // var in port.go); this test exists so a future signature drift in
@@ -140,11 +210,25 @@ func TestDispatchOpcodes(t *testing.T) {
 		assert.Equal(t, []byte{0x00, 0x00}, resp[8:])
 	})
 
-	t.Run("GET_SECURITY_INFO returns error status", func(t *testing.T) {
-		v := newVirtualPort(profileESP32S2)
-		resp := v.dispatch(reqHeader(opSecurityInfoReg, make([]byte, 20)))
-		require.NotNil(t, resp)
-		assert.NotEqual(t, byte(0), resp[8], "status byte must be non-zero")
+	t.Run("GET_SECURITY_INFO returns error status for magic-detected chips", func(t *testing.T) {
+		for _, p := range []*chipProfile{profileESP32S2, profileESP32} {
+			v := newVirtualPort(p)
+			resp := v.dispatch(reqHeader(opSecurityInfoReg, make([]byte, 20)))
+			require.NotNil(t, resp)
+			assert.NotEqual(t, byte(0), resp[8], "status byte must be non-zero for %s", p.name)
+		}
+	})
+
+	t.Run("GET_SECURITY_INFO returns chipID payload for chip-ID-detected chips", func(t *testing.T) {
+		for _, p := range []*chipProfile{profileESP32C3, profileESP32S3} {
+			v := newVirtualPort(p)
+			resp := v.dispatch(reqHeader(opSecurityInfoReg, make([]byte, 20)))
+			require.NotNil(t, resp)
+			respData := resp[8:]
+			require.Len(t, respData, 22, "20-byte payload + 2-byte status for %s", p.name)
+			assert.Equal(t, byte(0), respData[20], "status byte must be OK for %s", p.name)
+			assert.Equal(t, p.chipID, binary.LittleEndian.Uint32(respData[12:16]), "ChipID for %s", p.name)
+		}
 	})
 
 	t.Run("READ_REG magic value", func(t *testing.T) {

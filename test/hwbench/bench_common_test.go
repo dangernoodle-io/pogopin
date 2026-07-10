@@ -4,8 +4,9 @@
 // both lanes: the hardware-gated TestHWBench (hwbench_test.go, `hwtest`
 // build tag) and the hardware-free TestMockBench (mock_test.go, gated on
 // ACC_POGOPIN) against internal/mockhw's virtual chip. Neither lane runs
-// its scenarios directly from here — runGPIOScenarios holds the shared
-// subtests, called by both TestHWBench and TestMockBench.
+// its scenarios directly from here — runGPIOScenarios, runSecurityInfoScenario,
+// and runChipIdentityScenario hold the shared subtests, called by both
+// TestHWBench and TestMockBench.
 package hwbench
 
 import (
@@ -29,21 +30,47 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"dangernoodle.io/pogopin/internal/mockhw"
 	"dangernoodle.io/pogopin/internal/session"
 )
 
 // boardProfile describes the fixed hardware characteristics of one bench
 // board: which GPIO drives a simple visual LED (if any), whether the chip
 // enumerates over native USB (which forces reset_mode=no_reset — a
-// reset-based connect hangs/desyncs the ROM on these chips), and what kind
-// of LED sits on LEDPin (a plain GPIO LED can be driven with esp_gpio_set;
-// an APA102 needs a real SPI/bit-bang driver that esp_gpio_set can't
-// provide, so LED-visual scenarios skip on those boards).
+// reset-based connect hangs/desyncs the ROM on these chips), what kind of
+// LED sits on LEDPin (a plain GPIO LED can be driven with esp_gpio_set; an
+// APA102 needs a real SPI/bit-bang driver that esp_gpio_set can't provide,
+// so LED-visual scenarios skip on those boards), the espflasher chip
+// family name this board's chip detects as (asserted against esp_info's
+// chip.chip_name by runChipIdentityScenario, and used for security chip_id
+// by runSecurityInfoScenario), and — for TestMockBench only — which
+// internal/mockhw virtual-chip port this board key maps to (real-hardware
+// TestHWBench ignores MockPort; the port comes from POGOPIN_HW_PORT there).
 type boardProfile struct {
 	Name      string
 	LEDPin    int
 	NativeUSB bool
 	LEDType   string // "gpio", "apa102", "rgb"
+
+	// ChipFamily is the espflasher ChipName() this board's chip detects as
+	// (e.g. "ESP32-S2") — asserted against esp_info's chip.chip_name by
+	// runChipIdentityScenario, proving the port->profile->detection chain
+	// serves the right chip for this board key.
+	ChipFamily string
+	MockPort   string // internal/mockhw port name for this chip family
+
+	// SecurityChipID is the espflasher ImageChipID this board's chip is
+	// detected by via GET_SECURITY_INFO (0 = chip is magic-detected
+	// instead and has no ChipID; runSecurityInfoScenario skips it).
+	SecurityChipID uint32
+
+	// ReservedPin is a GPIO number espflasher's GPIOReserved reports
+	// reserved on this chip family, used by the reserved-pin-refusal
+	// scenarios. GPIO0 is a strapping pin on ESP32/S2/S3 but NOT on
+	// ESP32-C3 (espflasher's defESP32C3GPIO reserved map has no entry for
+	// pin 0 — its strap pins are 2/8/9), so this can't be a single
+	// hardcoded constant across chip families.
+	ReservedPin int
 }
 
 // boardProfiles is keyed by the POGOPIN_HW_BOARD/ACC_POGOPIN_BOARD value
@@ -52,23 +79,27 @@ var boardProfiles = []struct {
 	Key     string
 	Profile boardProfile
 }{
-	{"s2", boardProfile{Name: "S2 Mini", LEDPin: 15, NativeUSB: true, LEDType: "gpio"}},
-	// C3 Mini's onboard LED pin varies by vendor board revision; 15 is a
-	// commonly-safe drivable GPIO but is NOT verified against a specific
-	// C3 Mini SKU. Override with POGOPIN_HW_LED_PIN if it doesn't drive an
-	// LED on your board.
-	{"c3", boardProfile{Name: "C3 Mini", LEDPin: 15, NativeUSB: true, LEDType: "gpio"}},
+	{"s2", boardProfile{Name: "S2 Mini", LEDPin: 15, NativeUSB: true, LEDType: "gpio", ChipFamily: "ESP32-S2", MockPort: mockhw.MockPortNameS2}},
+	// C3 Mini's onboard LED pin varies by vendor board revision; 4 is a
+	// non-reserved GPIO on every ESP32-C3 (unlike the previous default of
+	// 15, which is a "flash"-reserved pin on every C3 — esp_gpio_set would
+	// refuse it on real hardware; caught by BR-66 PR3's mock-lane fix that
+	// finally routes the `c3` board key to a real C3 mock profile instead
+	// of always talking to S2). Still NOT verified to actually drive an LED
+	// on a specific C3 Mini SKU. Override with POGOPIN_HW_LED_PIN if it
+	// doesn't drive an LED on your board.
+	{"c3", boardProfile{Name: "C3 Mini", LEDPin: 4, NativeUSB: true, LEDType: "gpio", ChipFamily: "ESP32-C3", MockPort: mockhw.MockPortNameC3, SecurityChipID: 5, ReservedPin: 2}},
 	// S3 T-Dongle's status LED is an APA102 (clock+data, bit-banged SPI
 	// protocol) — not a plain GPIO the ROM bootloader can toggle with a
 	// single register write, so LEDPin is not drivable via esp_gpio_set.
 	// LED-visual scenarios skip on this profile.
-	{"s3dongle", boardProfile{Name: "S3 T-Dongle", LEDPin: 0, NativeUSB: true, LEDType: "apa102"}},
+	{"s3dongle", boardProfile{Name: "S3 T-Dongle", LEDPin: 0, NativeUSB: true, LEDType: "apa102", ChipFamily: "ESP32-S3", MockPort: mockhw.MockPortNameS3, SecurityChipID: 9}},
 	// CYD (ESP32/CH340) has a 3-pin RGB LED (R=22, G=16, B=17, per the
 	// prompt's pin assignment); LEDPin defaults to the red channel (22).
 	// It's still a plain GPIO from the ROM's perspective, so esp_gpio_set
 	// drives it fine — only the visual result (one LED channel, not the
 	// vendor's usual "RGB" impression) differs from a single-color LED.
-	{"cyd", boardProfile{Name: "CYD", LEDPin: 22, NativeUSB: false, LEDType: "rgb"}},
+	{"cyd", boardProfile{Name: "CYD", LEDPin: 22, NativeUSB: false, LEDType: "rgb", ChipFamily: "ESP32", MockPort: mockhw.MockPortNameESP32}},
 }
 
 func lookupProfile(key string) (boardProfile, bool) {
@@ -417,16 +448,18 @@ func runGPIOScenarios(t *testing.T, h *harness) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 
-		// GPIO0 is a strapping pin on every supported chip family and is
-		// refused by default without include_reserved.
+		// h.profile.ReservedPin is a strapping pin (or similar) reserved by
+		// espflasher's GPIOReserved for this chip family — refused by
+		// default without include_reserved. Not GPIO0 on every chip: C3's
+		// strap pins are 2/8/9, not 0 (see ReservedPin's doc comment).
 		res, _, err := h.callTool(ctx, "esp_gpio_set", gpioArgs(h.port, map[string]any{
-			"pin":   0,
+			"pin":   h.profile.ReservedPin,
 			"level": true,
 		}))
-		require.NoError(t, err, "esp_gpio_set(pin=0)")
-		require.True(t, res.IsError, "esp_gpio_set(pin=0) expected a reserved-pin refusal, got success: %s", resultText(res))
+		require.NoError(t, err, "esp_gpio_set(pin=%d)", h.profile.ReservedPin)
+		require.True(t, res.IsError, "esp_gpio_set(pin=%d) expected a reserved-pin refusal, got success: %s", h.profile.ReservedPin, resultText(res))
 		assert.Contains(t, strings.ToLower(resultText(res)), "reserved",
-			"esp_gpio_set(pin=0) error does not mention 'reserved': %s", resultText(res))
+			"esp_gpio_set(pin=%d) error does not mention 'reserved': %s", h.profile.ReservedPin, resultText(res))
 	})
 
 	t.Run("gpio_sweep_skips_reserved_and_emits_progress", func(t *testing.T) {
@@ -436,7 +469,7 @@ func runGPIOScenarios(t *testing.T, h *harness) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		pins := fmt.Sprintf("%d,0", h.profile.LEDPin) // one valid pin + GPIO0 (reserved)
+		pins := fmt.Sprintf("%d,%d", h.profile.LEDPin, h.profile.ReservedPin) // one valid pin + one reserved pin
 		res, tok, err := h.callTool(ctx, "esp_gpio_sweep", gpioArgs(h.port, map[string]any{
 			"pins":  pins,
 			"dwell": 1,
@@ -461,15 +494,80 @@ func runGPIOScenarios(t *testing.T, h *harness) {
 			case h.profile.LEDPin:
 				sawLED = true
 				assert.Falsef(t, p.Skipped, "LED pin %d unexpectedly skipped: %s", p.Pin, p.Reason)
-			case 0:
+			case h.profile.ReservedPin:
 				sawReserved = true
-				assert.True(t, p.Skipped, "reserved pin 0 was not skipped")
+				assert.True(t, p.Skipped, "reserved pin %d was not skipped", h.profile.ReservedPin)
 			}
 		}
 		assert.True(t, sawLED, "sweep result missing LED pin %d", h.profile.LEDPin)
-		assert.True(t, sawReserved, "sweep result missing reserved pin 0")
+		assert.True(t, sawReserved, "sweep result missing reserved pin %d", h.profile.ReservedPin)
 
 		assert.GreaterOrEqual(t, len(h.progressFor(tok)), 1, "esp_gpio_sweep emitted no notifications/progress")
+	})
+}
+
+// runSecurityInfoScenario exercises esp_info include=security for a chip
+// that's detected via GET_SECURITY_INFO's ChipID field (ESP32-C3,
+// ESP32-S3 — espflasher's UsesMagicValue:false path), asserting the
+// returned chip_id matches h.profile.SecurityChipID with no error. Skips
+// when SecurityChipID is 0 (magic-detected chips never expose a ChipID; on
+// the mock target GET_SECURITY_INFO deliberately errors for them so
+// espflasher's detectChip falls through to the chip-magic path, so
+// esp_info include=security has nothing to assert there).
+func runSecurityInfoScenario(t *testing.T, h *harness) {
+	t.Run("esp_info_security_chip_id", func(t *testing.T) {
+		if h.profile.SecurityChipID == 0 {
+			t.Skip("board's chip is magic-detected, not ChipID-detected — no security chip_id to assert")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, _, err := h.callTool(ctx, "esp_info", map[string]any{
+			"port":    h.port,
+			"include": "security",
+		})
+		require.NoError(t, err, "esp_info include=security")
+		require.False(t, res.IsError, "esp_info include=security returned error: %s", resultText(res))
+
+		var out struct {
+			Security struct {
+				ChipID *uint32 `json:"chip_id"`
+			} `json:"security"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resultText(res)), &out), "parse esp_info result: %s", resultText(res))
+		require.NotNil(t, out.Security.ChipID, "esp_info include=security result missing chip_id: %s", resultText(res))
+		assert.Equal(t, h.profile.SecurityChipID, *out.Security.ChipID)
+	})
+}
+
+// runChipIdentityScenario exercises esp_info's default chip section
+// (include="chip", no security probe needed) and asserts the reported
+// chip.chip_name equals h.profile.ChipFamily — proving the
+// port->profile->detection chain serves the correct chip for this board
+// key (would catch, e.g., a profileByPort mismap routing the c3 board key
+// to an S2 mock chip). Skips if ChipFamily is unset (defensive; every
+// entry in boardProfiles sets it today).
+func runChipIdentityScenario(t *testing.T, h *harness) {
+	t.Run("esp_info_chip_identity", func(t *testing.T) {
+		if h.profile.ChipFamily == "" {
+			t.Skip("board profile has no ChipFamily to assert")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		res, _, err := h.callTool(ctx, "esp_info", map[string]any{
+			"port": h.port,
+		})
+		require.NoError(t, err, "esp_info")
+		require.False(t, res.IsError, "esp_info returned error: %s", resultText(res))
+
+		var out struct {
+			Chip struct {
+				ChipName string `json:"chip_name"`
+			} `json:"chip"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(resultText(res)), &out), "parse esp_info result: %s", resultText(res))
+		assert.Equal(t, h.profile.ChipFamily, out.Chip.ChipName, "esp_info chip.chip_name does not match board profile's ChipFamily")
 	})
 }
 

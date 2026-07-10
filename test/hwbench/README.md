@@ -51,7 +51,7 @@ make hwbench-check
 | `POGOPIN_HW_BOARD` | Name | LED pin | Native USB | LED type |
 |---------------------|------|---------|------------|----------|
 | `s2` | S2 Mini | 15 | yes | gpio |
-| `c3` | C3 Mini | 15 (unverified — override with `POGOPIN_HW_LED_PIN`) | yes | gpio |
+| `c3` | C3 Mini | 4 (non-reserved on every C3, but unverified as the actual LED pin — override with `POGOPIN_HW_LED_PIN`) | yes | gpio |
 | `s3dongle` | S3 T-Dongle | n/a | yes | apa102 (LED-visual scenarios skip) |
 | `cyd` | CYD (ESP32/CH340) | 22 (red channel; RGB LED is R=22/G=16/B=17) | no | rgb |
 
@@ -81,15 +81,26 @@ Each is a `t.Run` subtest under `TestHWBench`:
 
 `TestMockBench` (`mock_test.go`) runs the `runGPIOScenarios` suite
 `TestHWBench` also runs (shared via `bench_common_test.go`), plus
-`runSerialMonitorScenarios` (serial_start/read/write/stop against a
-synthetic boot banner + write/read loopback — BR-66 PR2), against
-`internal/mockhw`'s virtual ESP32-S2 chip instead of a physical board —
-same stdio wire-protocol path (`mcp-go` client, real `pogo server`
-subprocess), no board attached. It complements the hardware lane above; it
-does not replace it. Silicon-specific quirks such as the magic-0x9
-regression (scenario 3) can only be validated on real hardware — the mock
-lane exists to catch tool-surface/protocol/session-logic regressions
-cheaply and deterministically in CI, not to simulate every hardware quirk.
+`runSecurityInfoScenario` (BR-66 PR3 — `esp_info include=security` asserts
+`chip_id` on chip-ID-detected boards) and `runSerialMonitorScenarios`
+(serial_start/read/write/stop against a synthetic boot banner + write/read
+loopback — BR-66 PR2), against `internal/mockhw`'s virtual chip instead of
+a physical board — same stdio wire-protocol path (`mcp-go` client, real
+`pogo server` subprocess), no board attached. It complements the hardware
+lane above; it does not replace it. Silicon-specific quirks such as the
+magic-0x9 regression (scenario 3) can only be validated on real hardware —
+the mock lane exists to catch tool-surface/protocol/session-logic
+regressions cheaply and deterministically in CI, not to simulate every
+hardware quirk.
+
+`internal/mockhw` emulates four chip families — ESP32, ESP32-S2, ESP32-C3,
+ESP32-S3 — each on its own synthetic port (`boardProfile.MockPort`,
+selected via `ACC_POGOPIN_BOARD`). ESP32/ESP32-S2 are detected via
+espflasher's chip-magic register path; ESP32-C3/ESP32-S3 have no magic
+value and are detected via a real 20-byte `GET_SECURITY_INFO` response
+carrying the chip's `ChipID` (5 for C3, 9 for S3) — the same path
+`esp_info include=security` exercises, which `runSecurityInfoScenario`
+asserts for the `c3`/`s3dongle` board profiles (`boardProfile.SecurityChipID`).
 
 Untagged (no `hwtest` build tag) — the mock server binary is built
 separately with the `mock` build tag (see `internal/mockhw`'s package doc
