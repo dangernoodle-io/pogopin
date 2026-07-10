@@ -1,4 +1,4 @@
-.PHONY: build test cover lint fmt tidy clean install
+.PHONY: build test cover lint hwbench-check fmt tidy clean install
 
 build:
 	CGO_ENABLED=0 go build -o pogo .
@@ -14,6 +14,11 @@ cover:
 
 lint:
 	golangci-lint run
+
+hwbench-check:
+	go build -tags hwtest ./...
+	go vet -tags hwtest ./...
+	golangci-lint run --build-tags hwtest ./...
 
 fmt:
 	gofmt -s -w .
