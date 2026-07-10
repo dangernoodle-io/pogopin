@@ -1,5 +1,7 @@
 package mcpserver
 
+import "github.com/mark3labs/mcp-go/mcp"
+
 // RiskClass classifies a registered MCP tool by the worst-case impact of
 // invoking it. This is the single source of truth for tool risk
 // classification (BR-71). DESTRUCTIVE entries must stay aligned with
@@ -74,4 +76,46 @@ var toolRiskClass = map[string]RiskClass{
 func riskClassOf(name string) (RiskClass, bool) {
 	c, ok := toolRiskClass[name]
 	return c, ok
+}
+
+// riskAnnotationOpts derives the MCP readOnly/destructive hint annotations
+// for a tool from its toolRiskClass entry (BR-71 STEP 2). This is the only
+// place that maps RiskClass -> mcp.ToolOption — every registration site MUST
+// go through this (via newTool) rather than hand-typing annotation values,
+// which would recreate the drift the registry exists to prevent.
+//
+// A tool missing a registry entry (a programming error the completeness test
+// in risk_test.go already guards against) falls back to the safest signal:
+// not read-only, destructive — the same as mcp-go's own zero-value default,
+// so an unclassified tool never over-claims safety.
+func riskAnnotationOpts(name string) []mcp.ToolOption {
+	class, ok := toolRiskClass[name]
+	if !ok {
+		class = RiskDestructive
+	}
+
+	var readOnly, destructive bool
+	switch class {
+	case RiskRead:
+		readOnly = true
+		destructive = false
+	case RiskWrite:
+		readOnly = false
+		destructive = false
+	case RiskDestructive:
+		readOnly = false
+		destructive = true
+	}
+
+	return []mcp.ToolOption{
+		mcp.WithReadOnlyHintAnnotation(readOnly),
+		mcp.WithDestructiveHintAnnotation(destructive),
+	}
+}
+
+// newTool wraps mcp.NewTool, appending the tool's risk-derived annotation
+// options so every registration site automatically gets the correct
+// readOnly/destructive hints without repeating the mapping.
+func newTool(name string, opts ...mcp.ToolOption) mcp.Tool {
+	return mcp.NewTool(name, append(opts, riskAnnotationOpts(name)...)...)
 }
