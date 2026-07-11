@@ -15,7 +15,31 @@ import (
 // 3x the 15s heartbeat interval.
 const staleWindow = 45 * time.Second
 
-var statusDir = DefaultDir()
+// freshWindow is the tighter staleness cutoff used by Mode's fresh-only
+// query — mirrors statusline.js's FRESH_SECONDS.
+const freshWindow = 30 * time.Second
+
+// statusDir, when non-empty, is an explicit test-set override (via
+// SetStatusDir) that always wins over POGOPIN_STATUS_DIR/DefaultDir(). Left
+// unset ("") in production so effectiveStatusDir resolves lazily on every
+// call — required so POGOPIN_STATUS_DIR is honored even though it may be set
+// after this package's var-init phase runs (e.g. by a test via t.Setenv, or
+// by a differently-ordered launcher).
+var statusDir string
+
+// effectiveStatusDir resolves the status directory a caller should use:
+// an explicit SetStatusDir override wins, then POGOPIN_STATUS_DIR (honored
+// so producer and consumer processes agree on a non-default dir, e.g. in
+// tests or sandboxed runs), then DefaultDir().
+func effectiveStatusDir() string {
+	if statusDir != "" {
+		return statusDir
+	}
+	if v := os.Getenv("POGOPIN_STATUS_DIR"); v != "" {
+		return v
+	}
+	return DefaultDir()
+}
 
 // legacyCleanupOnce ensures the best-effort removal of the old single-file
 // status.json only happens once per process.
@@ -35,7 +59,7 @@ func DefaultDir() string {
 // legacyPath returns the old single-file status.json path, sibling to the
 // status/ directory (<cacheDir>/pogopin/status.json).
 func legacyPath() string {
-	return filepath.Join(filepath.Dir(statusDir), "status.json")
+	return filepath.Join(filepath.Dir(effectiveStatusDir()), "status.json")
 }
 
 // SetStatusDir sets the status directory for testing and returns the previous value.
@@ -69,9 +93,10 @@ type StatusFile struct {
 	UpdatedAt int64       `json:"updated_at"` // Unix seconds
 }
 
-// ownFilePath returns this process's own status file path within statusDir.
+// ownFilePath returns this process's own status file path within the
+// effective status dir.
 func ownFilePath() string {
-	return filepath.Join(statusDir, strconv.Itoa(os.Getpid())+".json")
+	return filepath.Join(effectiveStatusDir(), strconv.Itoa(os.Getpid())+".json")
 }
 
 // Write marshals ports to this process's own status file using atomic
@@ -97,9 +122,10 @@ func Write(ports []PortState) {
 		return
 	}
 
-	_ = os.MkdirAll(statusDir, 0755)
+	dir := effectiveStatusDir()
+	_ = os.MkdirAll(dir, 0755)
 
-	tmp, err := os.CreateTemp(statusDir, "status-*.json")
+	tmp, err := os.CreateTemp(dir, "status-*.json")
 	if err != nil {
 		return
 	}
@@ -122,13 +148,50 @@ func Remove() {
 	_ = os.Remove(ownFilePath())
 }
 
-// ReadLivePorts globs statusDir for per-process status files, drops ports
-// belonging to a file whose owning process is dead or whose UpdatedAt is
-// older than staleWindow, and merges the surviving ports from all files
-// into one slice. Unparseable/partial files are skipped. Never panics;
-// returns nil on any directory-level error.
-func ReadLivePorts() []PortState {
-	entries, err := os.ReadDir(statusDir)
+// Mode controls the staleness cutoff a consumer-side status query uses —
+// mirrors POGOPIN_STATUSLINE_MODE / statusline.js's visibility modes.
+// ModePortsOnly shares ModeAlways's staleness cutoff; the two differ only in
+// the CLI's render step (idle text vs. silence), not in what ReadLivePorts
+// returns.
+type Mode int
+
+const (
+	ModeAlways Mode = iota
+	ModePortsOnly
+	ModeFreshOnly
+)
+
+// ParseMode parses a POGOPIN_STATUSLINE_MODE-style string; unknown or empty
+// values fall back to ModeAlways (matches statusline.js's VALID_MODES guard).
+func ParseMode(s string) Mode {
+	switch s {
+	case "ports-only":
+		return ModePortsOnly
+	case "fresh-only":
+		return ModeFreshOnly
+	default:
+		return ModeAlways
+	}
+}
+
+// maxAge returns the staleness cutoff for m: freshWindow (30s) for
+// ModeFreshOnly, staleWindow (45s) otherwise.
+func (m Mode) maxAge() time.Duration {
+	if m == ModeFreshOnly {
+		return freshWindow
+	}
+	return staleWindow
+}
+
+// mergeLivePorts globs the effective status dir for per-process status
+// files, drops ports belonging to a file whose owning process is dead or
+// whose UpdatedAt is older than maxAge, and merges the surviving ports from
+// all files into one slice. Unparseable/partial files are skipped. Never
+// panics; returns nil on any directory-level error (including a missing
+// dir).
+func mergeLivePorts(maxAge time.Duration) []PortState {
+	dir := effectiveStatusDir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
@@ -141,7 +204,7 @@ func ReadLivePorts() []PortState {
 			continue
 		}
 
-		path := filepath.Join(statusDir, entry.Name())
+		path := filepath.Join(dir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -152,7 +215,7 @@ func ReadLivePorts() []PortState {
 			continue
 		}
 
-		if now.Sub(time.Unix(sf.UpdatedAt, 0)) > staleWindow {
+		if now.Sub(time.Unix(sf.UpdatedAt, 0)) > maxAge {
 			continue
 		}
 
@@ -165,6 +228,33 @@ func ReadLivePorts() []PortState {
 	}
 
 	return merged
+}
+
+// ReadLivePorts returns the live, session-filtered port view for consumer
+// callers (the `pogo statusline` CLI). Mirrors status-lib.js's
+// readLivePorts() plus statusline.js's session filter, with one deliberate
+// behavioral difference: sessionID == "" renders NOTHING (returns an empty
+// slice) rather than falling back to "no filter". The JS widget's
+// `if (sessionId)` skip left a sessionless caller seeing every session's
+// ports merged together — exactly the cross-session port leak BR-76/BR-77
+// fixes. Fully fail-open: any read/parse error for an individual status
+// file just drops that file; a missing status dir yields an empty result.
+// err is always nil today; the signature keeps room for a future
+// non-fail-open caller without another breaking change.
+func ReadLivePorts(sessionID string, mode Mode) ([]PortState, error) {
+	if sessionID == "" {
+		return []PortState{}, nil
+	}
+
+	merged := mergeLivePorts(mode.maxAge())
+
+	filtered := make([]PortState, 0, len(merged))
+	for _, p := range merged {
+		if p.SessionID == sessionID {
+			filtered = append(filtered, p)
+		}
+	}
+	return filtered, nil
 }
 
 // filePID derives the owning PID for a status file: prefer a PortState.PID
@@ -192,7 +282,8 @@ func filePID(name string, sf StatusFile) int {
 // never removes a file that's fresh and live, so it never races a
 // concurrently-running server's own file. Never panics.
 func SweepStale() {
-	entries, err := os.ReadDir(statusDir)
+	dir := effectiveStatusDir()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return
 	}
@@ -204,7 +295,7 @@ func SweepStale() {
 			continue
 		}
 
-		path := filepath.Join(statusDir, entry.Name())
+		path := filepath.Join(dir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue

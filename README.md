@@ -72,7 +72,7 @@ Pass `--diagnostic` (or set `POGOPIN_DIAGNOSTIC=1`) to run a read-only diagnosti
 
 ## CLI
 
-See [CLI](../../wiki/CLI) for subcommand reference.
+`pogo server`, `pogo decode`, and `pogo statusline` (renders the serial-monitor status line for statusline widgets — reads the Claude Code statusline stdin contract, resolves session identity, and prints live port state). See [CLI](../../wiki/CLI) for subcommand reference.
 
 ## License
 

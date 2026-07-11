@@ -2317,3 +2317,35 @@ func TestStartSessionHonorsNoResetOnExpireHold(t *testing.T) {
 	require.True(t, exists)
 	assert.False(t, sess.noResetOnExpire, "hold must be consumed so it can't leak into the restarted session")
 }
+
+func TestResolveProducerSessionID_Precedence(t *testing.T) {
+	cases := []struct {
+		name       string
+		pogopinEnv string
+		claudeEnv  string
+		want       string
+	}{
+		{"POGOPIN_SESSION_ID wins over CLAUDE_CODE_SESSION_ID", "sess-pogopin", "sess-claude", "sess-pogopin"},
+		{"falls back to CLAUDE_CODE_SESSION_ID when POGOPIN unset", "", "sess-claude", "sess-claude"},
+		{"empty when neither set", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("POGOPIN_SESSION_ID", tc.pogopinEnv)
+			t.Setenv("CLAUDE_CODE_SESSION_ID", tc.claudeEnv)
+			assert.Equal(t, tc.want, resolveProducerSessionID())
+		})
+	}
+}
+
+func TestPortStateFor_SessionIDReflectsResolver(t *testing.T) {
+	t.Setenv("POGOPIN_SESSION_ID", "sess-producer")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "")
+
+	mgr := serial.NewManagerWithBufferSize(10)
+	sess := &PortSession{mgr: mgr, mode: ModeReader}
+
+	ps := portStateFor("/dev/test", sess)
+	assert.Equal(t, "sess-producer", ps.SessionID)
+	assert.Equal(t, os.Getpid(), ps.PID)
+}

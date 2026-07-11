@@ -19,6 +19,7 @@ func init() {
 	rootCmd.AddCommand(decodeCmd)
 	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(gpioCmd)
+	rootCmd.AddCommand(statuslineCmd)
 }
 
 // Execute runs the root command.

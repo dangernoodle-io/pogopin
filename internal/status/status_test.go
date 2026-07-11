@@ -360,7 +360,7 @@ func TestWrite_RemovesLegacySingleFile(t *testing.T) {
 	}
 }
 
-func TestReadLivePorts_MergesMultipleFiles(t *testing.T) {
+func TestMergeLivePorts_MergesMultipleFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -371,13 +371,13 @@ func TestReadLivePorts_MergesMultipleFiles(t *testing.T) {
 	defer killChild(child)
 	writeFileFor(t, tmpDir, child, []PortState{{Port: "/dev/ttyUSB1", Running: true, PID: child}}, time.Now())
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 2 {
 		t.Fatalf("expected 2 merged ports, got %d: %v", len(ports), ports)
 	}
 }
 
-func TestReadLivePorts_DropsDeadPID(t *testing.T) {
+func TestMergeLivePorts_DropsDeadPID(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -387,7 +387,7 @@ func TestReadLivePorts_DropsDeadPID(t *testing.T) {
 	deadPID := 999999
 	writeFileFor(t, tmpDir, deadPID, []PortState{{Port: "/dev/ttyUSB1", Running: true, PID: deadPID}}, time.Now())
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 1 {
 		t.Fatalf("expected 1 live port after dropping dead-pid file, got %d: %v", len(ports), ports)
 	}
@@ -396,7 +396,7 @@ func TestReadLivePorts_DropsDeadPID(t *testing.T) {
 	}
 }
 
-func TestReadLivePorts_DropsStale(t *testing.T) {
+func TestMergeLivePorts_DropsStale(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -406,7 +406,7 @@ func TestReadLivePorts_DropsStale(t *testing.T) {
 	staleTime := time.Now().Add(-time.Hour)
 	writeFileFor(t, tmpDir, os.Getpid()+1, []PortState{{Port: "/dev/ttyUSB1", Running: true, PID: os.Getpid()}}, staleTime)
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 1 {
 		t.Fatalf("expected 1 live port after dropping stale file, got %d: %v", len(ports), ports)
 	}
@@ -415,7 +415,31 @@ func TestReadLivePorts_DropsStale(t *testing.T) {
 	}
 }
 
-func TestReadLivePorts_SkipsUnparseableFile(t *testing.T) {
+func TestMergeLivePorts_FreshOnlyDropsOlderThan30s(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid()}}, time.Now())
+	// 40s old: survives the 45s default staleWindow but not the 30s fresh
+	// window.
+	writeFileFor(t, tmpDir, os.Getpid()+1, []PortState{{Port: "/dev/ttyUSB1", Running: true, PID: os.Getpid()}}, time.Now().Add(-40*time.Second))
+
+	withDefault := mergeLivePorts(staleWindow)
+	if len(withDefault) != 2 {
+		t.Fatalf("expected 2 ports under default 45s window, got %d: %v", len(withDefault), withDefault)
+	}
+
+	fresh := mergeLivePorts(freshWindow)
+	if len(fresh) != 1 {
+		t.Fatalf("expected 1 port under 30s fresh window, got %d: %v", len(fresh), fresh)
+	}
+	if fresh[0].Port != "/dev/ttyUSB0" {
+		t.Errorf("unexpected surviving port: %v", fresh[0])
+	}
+}
+
+func TestMergeLivePorts_SkipsUnparseableFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -425,13 +449,13 @@ func TestReadLivePorts_SkipsUnparseableFile(t *testing.T) {
 		t.Fatalf("failed to write garbage file: %v", err)
 	}
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 1 {
 		t.Fatalf("expected 1 live port, garbage file should be skipped, got %d: %v", len(ports), ports)
 	}
 }
 
-func TestReadLivePorts_FallsBackToFilenameStemWhenNoPortPID(t *testing.T) {
+func TestMergeLivePorts_FallsBackToFilenameStemWhenNoPortPID(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -440,13 +464,13 @@ func TestReadLivePorts_FallsBackToFilenameStemWhenNoPortPID(t *testing.T) {
 	// filename stem (this process's own pid) to determine liveness.
 	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true}}, time.Now())
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 1 {
 		t.Fatalf("expected 1 live port via filename-stem fallback, got %d: %v", len(ports), ports)
 	}
 }
 
-func TestReadLivePorts_DropsFileWithDeadPIDFallbackAndEmptyPorts(t *testing.T) {
+func TestMergeLivePorts_DropsFileWithDeadPIDFallbackAndEmptyPorts(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -454,13 +478,13 @@ func TestReadLivePorts_DropsFileWithDeadPIDFallbackAndEmptyPorts(t *testing.T) {
 	// No ports at all: filePID falls through to the filename stem, a dead pid.
 	writeFileFor(t, tmpDir, 999999, []PortState{}, time.Now())
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 0 {
 		t.Fatalf("expected 0 ports for dead-pid-via-filename-fallback file, got %d: %v", len(ports), ports)
 	}
 }
 
-func TestReadLivePorts_NonNumericFilenameStemTreatedAsDead(t *testing.T) {
+func TestMergeLivePorts_NonNumericFilenameStemTreatedAsDead(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)
 	defer SetStatusDir(prev)
@@ -476,7 +500,7 @@ func TestReadLivePorts_NonNumericFilenameStemTreatedAsDead(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if len(ports) != 1 {
 		t.Fatalf("expected only the numeric-pid file's port, got %d: %v", len(ports), ports)
 	}
@@ -485,14 +509,211 @@ func TestReadLivePorts_NonNumericFilenameStemTreatedAsDead(t *testing.T) {
 	}
 }
 
-func TestReadLivePorts_MissingDirReturnsNil(t *testing.T) {
+func TestMergeLivePorts_MissingDirReturnsNil(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(filepath.Join(tmpDir, "does-not-exist"))
 	defer SetStatusDir(prev)
 
-	ports := ReadLivePorts()
+	ports := mergeLivePorts(staleWindow)
 	if ports != nil {
 		t.Errorf("expected nil for missing dir, got %v", ports)
+	}
+}
+
+func TestReadLivePorts_EmptySessionIDRendersNothing(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	// Even though a live matching-session-less port exists, an empty
+	// sessionID must return nothing — the cross-session leak fix.
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"}}, time.Now())
+
+	ports, err := ReadLivePorts("", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for empty sessionID, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FiltersToMatchingSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{
+		{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"},
+		{Port: "/dev/ttyUSB1", Running: true, PID: os.Getpid(), SessionID: "sess-b"},
+	}, time.Now())
+
+	ports, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 1 {
+		t.Fatalf("expected 1 port matching sess-a, got %d: %v", len(ports), ports)
+	}
+	if ports[0].Port != "/dev/ttyUSB0" {
+		t.Errorf("unexpected surviving port: %v", ports[0])
+	}
+}
+
+func TestReadLivePorts_NoMatchingSessionReturnsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"}}, time.Now())
+
+	ports, err := ReadLivePorts("sess-other", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for non-matching session, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FailOpenOnMissingDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(filepath.Join(tmpDir, "does-not-exist"))
+	defer SetStatusDir(prev)
+
+	ports, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for missing dir, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FailOpenOnUnparseableFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"}}, time.Now())
+	if err := os.WriteFile(filepath.Join(tmpDir, "garbage.json"), []byte("not json"), 0644); err != nil {
+		t.Fatalf("failed to write garbage file: %v", err)
+	}
+
+	ports, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 1 {
+		t.Fatalf("expected 1 port, garbage file should be skipped, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FailOpenOnStaleFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"}}, time.Now().Add(-time.Hour))
+
+	ports, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for stale file, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FailOpenOnDeadPID(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	deadPID := 999999
+	writeFileFor(t, tmpDir, deadPID, []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: deadPID, SessionID: "sess-a"}}, time.Now())
+
+	ports, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for dead-pid file, got %d: %v", len(ports), ports)
+	}
+}
+
+func TestReadLivePorts_FreshOnlyModeUsesTighterWindow(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	// 40s old: within the 45s ModeAlways window but outside 30s ModeFreshOnly.
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"}}, time.Now().Add(-40*time.Second))
+
+	always, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(always) != 1 {
+		t.Fatalf("expected 1 port under ModeAlways, got %d: %v", len(always), always)
+	}
+
+	fresh, err := ReadLivePorts("sess-a", ModeFreshOnly)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(fresh) != 0 {
+		t.Fatalf("expected 0 ports under ModeFreshOnly, got %d: %v", len(fresh), fresh)
+	}
+}
+
+func TestParseMode(t *testing.T) {
+	cases := map[string]Mode{
+		"always":     ModeAlways,
+		"ports-only": ModePortsOnly,
+		"fresh-only": ModeFreshOnly,
+		"":           ModeAlways,
+		"bogus":      ModeAlways,
+	}
+	for in, want := range cases {
+		if got := ParseMode(in); got != want {
+			t.Errorf("ParseMode(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestEffectiveStatusDir_HonorsEnvOverride(t *testing.T) {
+	prev := statusDir
+	statusDir = ""
+	defer func() { statusDir = prev }()
+
+	t.Setenv("POGOPIN_STATUS_DIR", "/tmp/env-override-status-dir")
+
+	if got := effectiveStatusDir(); got != "/tmp/env-override-status-dir" {
+		t.Errorf("effectiveStatusDir() = %s, want env override", got)
+	}
+}
+
+func TestEffectiveStatusDir_FallsBackToDefaultDir(t *testing.T) {
+	prev := statusDir
+	statusDir = ""
+	defer func() { statusDir = prev }()
+
+	t.Setenv("POGOPIN_STATUS_DIR", "")
+
+	if got := effectiveStatusDir(); got != DefaultDir() {
+		t.Errorf("effectiveStatusDir() = %s, want DefaultDir() = %s", got, DefaultDir())
+	}
+}
+
+func TestEffectiveStatusDir_SetStatusDirWinsOverEnv(t *testing.T) {
+	prev := SetStatusDir("/tmp/explicit-override")
+	defer SetStatusDir(prev)
+
+	t.Setenv("POGOPIN_STATUS_DIR", "/tmp/env-override-status-dir")
+
+	if got := effectiveStatusDir(); got != "/tmp/explicit-override" {
+		t.Errorf("effectiveStatusDir() = %s, want explicit SetStatusDir override", got)
 	}
 }
 
