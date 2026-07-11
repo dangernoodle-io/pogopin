@@ -1,4 +1,4 @@
-# pogopin
+# <img src=".github/assets/pogopin.svg" width="128" align="absmiddle" alt="pogopin logo"> pogopin
 
 [![Go](https://img.shields.io/badge/Go-1.26.2-00ADD8?logo=go)](https://go.dev/)
 [![Build](https://github.com/dangernoodle-io/pogopin/actions/workflows/build.yml/badge.svg)](https://github.com/dangernoodle-io/pogopin/actions/workflows/build.yml)
@@ -15,7 +15,7 @@ Embedded development MCP server. Serial port monitoring, ESP-IDF chip programmin
 | Namespace | Tools | Docs |
 |-----------|-------|------|
 | Serial | `serial_list`, `serial_start`, `serial_read`, `serial_write`, `serial_stop`, `serial_restart`, `serial_status`, `flash_external` | [Wiki](../../wiki/Serial-Tools) |
-| ESP | `esp_flash`, `esp_erase`, `esp_info`, `esp_register`, `esp_reset`, `esp_read_flash`, `esp_read_nvs`, `esp_write_nvs`, `esp_nvs_set`, `esp_nvs_delete` | [Wiki](../../wiki/ESP-Tools) |
+| ESP | `esp_flash`, `esp_erase`, `esp_info`, `esp_register`, `esp_reset`, `esp_read_flash`, `esp_read_nvs`, `esp_write_nvs`, `esp_nvs_set`, `esp_nvs_delete`, `esp_gpio_read`, `esp_gpio_set`, `esp_gpio_sweep` | [Wiki](../../wiki/ESP-Tools) |
 | Decode | `decode_backtrace` | [Wiki](../../wiki/Decode) |
 
 ## Use with Claude Code
@@ -66,13 +66,13 @@ Download pre-built binaries from [releases](https://github.com/dangernoodle-io/p
 claude mcp add --scope user pogopin /absolute/path/to/pogo server
 ```
 
-This gives you the 19 MCP tools but none of the auto-context injection that the plugin provides.
+This gives you the **22** MCP tools but none of the auto-context injection that the plugin provides.
 
 Pass `--diagnostic` (or set `POGOPIN_DIAGNOSTIC=1`) to run a read-only diagnostic profile — see [CLI](../../wiki/CLI).
 
 ## CLI
 
-`pogo server`, `pogo decode`, and `pogo statusline` (renders the serial-monitor status line for statusline widgets — reads the Claude Code statusline stdin contract, resolves session identity, and prints live port state). See [CLI](../../wiki/CLI) for subcommand reference.
+`pogo server`, `pogo decode`, `pogo gpio` (bit-bang/read GPIO pins), and `pogo statusline` (renders the serial-monitor status line for statusline widgets — reads the Claude Code statusline stdin contract, resolves session identity, and prints live port state; configurable via `POGOPIN_SESSION_ID`, `POGOPIN_STATUS_DIR`, and `POGOPIN_STATUSLINE_MODE`). See [CLI](../../wiki/CLI) for subcommand reference and env-var detail.
 
 ## License
 

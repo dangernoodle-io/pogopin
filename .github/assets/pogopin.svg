@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none" role="img" aria-label="PogoPin curved project icon">
+  <title>PogoPin by DangerNoodle — curved study</title>
+  <defs>
+    <clipPath id="lens-clip"><circle cx="48" cy="181" r="15.5"/></clipPath>
+  </defs>
+  <style>
+    .branch{fill:none;stroke:#050505;stroke-width:7;stroke-linecap:round;stroke-linejoin:round}
+    .hub{fill:#E7EBF0;stroke:#050505;stroke-width:7;stroke-linejoin:round;stroke-miterlimit:2}
+    .endpoint{stroke:#050505;stroke-width:7;stroke-linejoin:round;stroke-miterlimit:2}
+    .junction{fill:none;stroke:#FFCC3D;stroke-width:6;stroke-linecap:round;stroke-linejoin:round}
+    @media(prefers-color-scheme:dark){
+      .branch{stroke:#F1F5F9}.hub{fill:#334155;stroke:#F1F5F9}.endpoint{stroke:#F1F5F9}
+    }
+  </style>
+
+  <g transform="translate(0,18)">
+  <!-- Curved connectors terminating tangentially at repositioned pads -->
+  <path class="branch" d="M128 90V56"/>
+  <path class="branch" d="M91.63 153C80 153 69 158 61.44 167.56"/>
+  <path class="branch" d="M164.37 153C176 152 186 159 192.12 170.1"/>
+
+  <!-- Cool-gray hub shared with Breadboard -->
+  <polygon class="hub" points="128,90 164.37,111 164.37,153 128,174 91.63,153 91.63,111"/>
+  <path class="junction" d="M128 128L115.9 121M128 128L140.1 121M128 128V145"/>
+
+  <!-- Centered compact band pad -->
+  <rect class="endpoint" x="109" y="18" width="38" height="38" rx="3" fill="#22C55E"/>
+  <rect x="121" y="32" width="14" height="10" rx="1.5" fill="#050505"/>
+  <rect x="121" y="35" width="14" height="4" fill="#3977F6"/>
+
+  <!-- Repositioned monocle pad -->
+  <circle class="endpoint" cx="48" cy="181" r="19" fill="#B9D7EA"/>
+  <g clip-path="url(#lens-clip)">
+    <path d="M32 168L60 196" stroke="#FFF" stroke-width="6" stroke-linecap="round"/>
+    <path d="M40 164L66 190" stroke="#8DBEE0" stroke-width="3" stroke-linecap="round" opacity=".7"/>
+  </g>
+
+  <!-- Repositioned snake-body pad -->
+  <polygon class="endpoint" points="211,159.2 229.88,170.1 229.88,191.9 211,202.8 192.12,191.9 192.12,170.1" fill="#FFCC3D"/>
+  <polygon points="211.73,162 224.73,169.5 211.73,177.5" fill="#050505"/>
+  <polygon points="197.23,192.5 209.73,200 209.73,184.5" fill="#050505"/>
+  </g>
+</svg>
