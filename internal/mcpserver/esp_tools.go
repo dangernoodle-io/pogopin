@@ -19,7 +19,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithBoolean("force_offsets", mcp.Description("Skip partition-table validation. Use for factory-flash (combined firmware.factory.bin at 0x0), recovery from erased chip, or non-standard layouts. DESTRUCTIVE if misused.")),
 		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait for boot output after reset (default 2; 0 = skip)")),
 	)
-	s.AddTool(espFlashTool, withRecover(handleFlash))
+	addTool(s, espFlashTool, withRecover(handleFlash))
 
 	espEraseTool := newTool("esp_erase",
 		mcp.WithDescription("Erase flash on ESP chip. Omit offset to erase the ENTIRE chip (DESTRUCTIVE); provide offset+size to erase only that region (safer). Returns new_port if USB CDC re-enumerated. Captures boot_output after erase."),
@@ -30,7 +30,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait for boot output after reset (default 2; 0 = skip)")),
 	)
-	s.AddTool(espEraseTool, withRecover(handleErase))
+	addTool(s, espEraseTool, withRecover(handleErase))
 
 	espInfoTool := newTool("esp_info",
 		mcp.WithDescription("Get ESP device info. Returns chip info by default (chip_type, revision, flash_id, flash_size). Pass include=security for secure boot/flash encryption status, or include=chip,security for both."),
@@ -39,7 +39,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 		mcp.WithString("include", mcp.Description("Info to return: chip (default), security, or chip,security")),
 	)
-	s.AddTool(espInfoTool, withRecover(handleESPInfo))
+	addTool(s, espInfoTool, withRecover(handleESPInfo))
 
 	espRegisterTool := newTool("esp_register",
 		mcp.WithDescription("Read or write a 32-bit ESP register. Omit value to read; provide value to write. Returns {value: hex string} in both cases."),
@@ -49,7 +49,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espRegisterTool, withRecover(handleRegister))
+	addTool(s, espRegisterTool, withRecover(handleRegister))
 
 	espResetTool := newTool("esp_reset",
 		mcp.WithDescription("Reset an ESP device via bootloader. Returns new_port if USB CDC re-enumerated. Captures boot_output after reset."),
@@ -57,7 +57,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait for boot output after reset (default 2; 0 = skip)")),
 	)
-	s.AddTool(espResetTool, withRecover(handleReset))
+	addTool(s, espResetTool, withRecover(handleReset))
 
 	espReadFlashTool := newTool("esp_read_flash",
 		mcp.WithDescription("Read from ESP flash. Returns base64-encoded raw bytes by default, or MD5 hash if md5=true."),
@@ -68,7 +68,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 		mcp.WithBoolean("md5", mcp.Description("Return MD5 hash instead of raw bytes (default false)")),
 	)
-	s.AddTool(espReadFlashTool, withRecover(handleESPReadFlash))
+	addTool(s, espReadFlashTool, withRecover(handleESPReadFlash))
 
 	espReadNVSTool := newTool("esp_read_nvs",
 		mcp.WithDescription("Read and parse NVS entries from ESP flash. Returns all key-value pairs; use namespace to filter."),
@@ -79,7 +79,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espReadNVSTool, withRecover(handleReadNVS))
+	addTool(s, espReadNVSTool, withRecover(handleReadNVS))
 
 	espWriteNVSTool := newTool("esp_write_nvs",
 		mcp.WithDescription("Write NVS entries to ESP flash. DESTRUCTIVE — REPLACES the entire NVS partition, dropping any keys not included in entries. entries is an array of {namespace, key, type, value} objects. For adding/updating/removing individual keys without touching the rest of the partition, use esp_nvs_set/esp_nvs_delete instead."),
@@ -90,7 +90,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espWriteNVSTool, withRecover(handleWriteNVS))
+	addTool(s, espWriteNVSTool, withRecover(handleWriteNVS))
 
 	espNVSSetTool := newTool("esp_nvs_set",
 		mcp.WithDescription("Set one or more NVS keys in a single read-modify-write cycle. entries is an array of {namespace, key, type, value} objects. type must be one of: u8, u16, u32, i8, i16, i32, string."),
@@ -101,7 +101,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espNVSSetTool, withRecover(handleNVSSet))
+	addTool(s, espNVSSetTool, withRecover(handleNVSSet))
 
 	espNVSDeleteTool := newTool("esp_nvs_delete",
 		mcp.WithDescription("Delete an NVS key or namespace (read-modify-write). Omit key to delete entire namespace."),
@@ -113,7 +113,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espNVSDeleteTool, withRecover(handleNVSDelete))
+	addTool(s, espNVSDeleteTool, withRecover(handleNVSDelete))
 
 	espGPIOReadTool := newTool("esp_gpio_read",
 		mcp.WithDescription("Read the current level of a single ESP GPIO pin directly against the ROM/stub bootloader's memory-mapped GPIO registers — no firmware needs to be running. Returns {pin, level}."),
@@ -122,7 +122,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espGPIOReadTool, withRecover(handleGPIORead))
+	addTool(s, espGPIOReadTool, withRecover(handleGPIORead))
 
 	espGPIOSetTool := newTool("esp_gpio_set",
 		mcp.WithDescription("Drive a single ESP GPIO pin high or low directly against the ROM/stub bootloader — no firmware needs to be running. level accepts true/false or 1/0. Refuses reserved pins (flash/PSRAM, strapping, UART0, USB-JTAG) by default — pass include_reserved=true to override. Always refuses input-only/nonexistent pins regardless of include_reserved (the underlying error is surfaced verbatim)."),
@@ -133,7 +133,7 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espGPIOSetTool, withRecover(handleGPIOSet))
+	addTool(s, espGPIOSetTool, withRecover(handleGPIOSet))
 
 	espGPIOSweepTool := newTool("esp_gpio_sweep",
 		mcp.WithDescription("Sweep a set of ESP GPIO pins over a single connection, driving each in turn and dwelling on each polarity — useful for finding which pin drives an unlabeled LED/relay without reflashing. pins is a comma-separated list and/or inclusive ranges (e.g. \"4,16,17\" or \"0-21\"); omit or empty to sweep every drivable (non-reserved) pin the detected chip exposes. Reserved pins (flash/PSRAM, strapping, UART0, USB-JTAG, input-only) are skipped by default — pass include_reserved=true to force them. Returns {pins: [{pin, skipped, reason}]}. Emits MCP progress notifications per pin."),
@@ -145,5 +145,5 @@ func registerESPTools(s *server.MCPServer) {
 		mcp.WithNumber("baud", mcp.Description("Connection baud rate (default 115200)")),
 		mcp.WithString("reset_mode", mcp.Description("Reset mode: auto (default), default, usb_jtag, no_reset")),
 	)
-	s.AddTool(espGPIOSweepTool, withRecover(handleGPIOSweep))
+	addTool(s, espGPIOSweepTool, withRecover(handleGPIOSweep))
 }

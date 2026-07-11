@@ -68,6 +68,8 @@ claude mcp add --scope user pogopin /absolute/path/to/pogo server
 
 This gives you the 19 MCP tools but none of the auto-context injection that the plugin provides.
 
+Pass `--diagnostic` (or set `POGOPIN_DIAGNOSTIC=1`) to run a read-only diagnostic profile — see [CLI](../../wiki/CLI).
+
 ## CLI
 
 See [CLI](../../wiki/CLI) for subcommand reference.

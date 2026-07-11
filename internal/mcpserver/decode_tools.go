@@ -13,5 +13,5 @@ func registerDecodeTools(s *server.MCPServer) {
 		mcp.WithString("panic_text", mcp.Description("inline panic text")),
 		mcp.WithString("panic_file", mcp.Description("path to a file containing panic text")),
 	)
-	s.AddTool(decodeTool, handleDecodeBacktrace)
+	addTool(s, decodeTool, handleDecodeBacktrace)
 }

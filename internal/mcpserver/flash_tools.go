@@ -17,5 +17,5 @@ func registerFlashExternalTool(s *server.MCPServer) {
 		mcp.WithString("cwd", mcp.Description("Working directory for the command")),
 		mcp.WithNumber("boot_wait", mcp.Description("Seconds to wait after restart and capture boot output (default 2.0, 0 disables)")),
 	)
-	s.AddTool(flashTool, withRecover(handleSerialFlash))
+	addTool(s, flashTool, withRecover(handleSerialFlash))
 }
