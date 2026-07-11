@@ -245,9 +245,23 @@ func portStateFor(p string, s *PortSession) status.PortState {
 		Running:      s.mgr.IsRunning(),
 		Reconnecting: s.mgr.IsReconnecting(),
 		LastError:    lastErr,
-		SessionID:    os.Getenv("CLAUDE_CODE_SESSION_ID"),
+		SessionID:    resolveProducerSessionID(),
 		PID:          os.Getpid(),
 	}
+}
+
+// resolveProducerSessionID resolves the session identity a running pogo
+// server process stamps onto its status.PortState entries. POGOPIN_SESSION_ID
+// takes precedence — a host-agnostic override any launcher can set — falling
+// back to CLAUDE_CODE_SESSION_ID (Claude Code's own env var) for backward
+// compatibility, and "" when neither is set (e.g. standalone runs). This is a
+// long-running server process with no stdin request to key off of, unlike the
+// consumer-side resolver in internal/cli/statusline.go.
+func resolveProducerSessionID() string {
+	if v := os.Getenv("POGOPIN_SESSION_ID"); v != "" {
+		return v
+	}
+	return os.Getenv("CLAUDE_CODE_SESSION_ID")
 }
 
 func modeString(m PortMode) string {
