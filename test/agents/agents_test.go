@@ -1,16 +1,25 @@
-package main
+package agents
 
 import (
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// repoRoot resolves the module root relative to this test file.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	require.True(t, ok, "runtime.Caller failed")
+	return filepath.Join(filepath.Dir(thisFile), "..", "..")
+}
 
 var agentBuiltinTools = map[string]bool{
 	"Read": true, "Grep": true, "Glob": true, "Bash": true,
@@ -72,7 +81,7 @@ func agentShortName(tool string) string {
 }
 
 func TestPluginAgentDefinitions(t *testing.T) {
-	files, err := filepath.Glob("plugin/agents/*.md")
+	files, err := filepath.Glob(filepath.Join(repoRoot(t), "plugin", "agents", "*.md"))
 	require.NoError(t, err, "glob plugin/agents/*.md")
 	require.NotEmpty(t, files, "expected at least one agent .md file in plugin/agents/")
 
@@ -161,7 +170,7 @@ func TestPluginAgentDefinitions(t *testing.T) {
 // every board-*/firmware-* token mentioned in an agent file must name a real
 // agent (a plugin/agents/*.md basename).
 func TestPluginAgentCrossReferences(t *testing.T) {
-	files, err := filepath.Glob("plugin/agents/*.md")
+	files, err := filepath.Glob(filepath.Join(repoRoot(t), "plugin", "agents", "*.md"))
 	require.NoError(t, err, "glob plugin/agents/*.md")
 	require.NotEmpty(t, files, "expected at least one agent .md file in plugin/agents/")
 
@@ -197,7 +206,7 @@ func TestPluginAgentCrossReferences(t *testing.T) {
 // frontmatter — a sign the tool was removed/renamed but the prose wasn't
 // updated, or the prose implies a direct call the agent can't make.
 func TestPluginAgentToolHonesty(t *testing.T) {
-	files, err := filepath.Glob("plugin/agents/*.md")
+	files, err := filepath.Glob(filepath.Join(repoRoot(t), "plugin", "agents", "*.md"))
 	require.NoError(t, err, "glob plugin/agents/*.md")
 	require.NotEmpty(t, files, "expected at least one agent .md file in plugin/agents/")
 
