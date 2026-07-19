@@ -75,6 +75,18 @@ func TestResolveShellPath(t *testing.T) {
 	assert.Contains(t, p, string(os.PathListSeparator))
 }
 
+// TestResolveShellPathFallsBackOnShellError covers resolveShellPath's error
+// branch: when SHELL points at a nonexistent binary, exec.Command errors and
+// the function must fall back to os.Getenv("PATH") rather than propagating
+// the failure.
+func TestResolveShellPathFallsBackOnShellError(t *testing.T) {
+	t.Setenv("SHELL", "/nonexistent/pogopin-fake-shell")
+	t.Setenv("PATH", "/fallback/bin")
+
+	p := resolveShellPath()
+	assert.Equal(t, "/fallback/bin", p)
+}
+
 // TestEnvWithPath verifies that envWithPath() constructs the PATH environment
 // variable correctly in the environment slice.
 func TestEnvWithPath(t *testing.T) {
@@ -976,4 +988,23 @@ func TestCheckArchCompat(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSetFindSimilarPortFn pins the exported setter's wiring onto the
+// package-private findSimilarPortFn var, mirroring the direct-assignment
+// convention the re-enumeration tests above use for setup/teardown.
+func TestSetFindSimilarPortFn(t *testing.T) {
+	origFindFn := findSimilarPortFn
+	defer func() { findSimilarPortFn = origFindFn }()
+
+	called := false
+	SetFindSimilarPortFn(func(port string, knownPorts map[string]bool) string {
+		called = true
+		return "/dev/ttyUSB9"
+	})
+
+	require.NotNil(t, findSimilarPortFn)
+	got := findSimilarPortFn("/dev/ttyUSB0", nil)
+	assert.True(t, called)
+	assert.Equal(t, "/dev/ttyUSB9", got)
 }

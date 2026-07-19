@@ -34,6 +34,23 @@ func writeFakeAddr2line(t *testing.T, dir, name, output string) string {
 	return path
 }
 
+// TestArchNamingHelpers covers binaryName/archLabel/toolDirName's full
+// switch (both known archs plus the ArchUnknown default branch) — only the
+// Xtensa/Riscv32 branches are exercised indirectly by FindToolchain's tests.
+func TestArchNamingHelpers(t *testing.T) {
+	require.Equal(t, "xtensa-esp-elf-addr2line", binaryName(ArchXtensa))
+	require.Equal(t, "riscv32-esp-elf-addr2line", binaryName(ArchRiscv32))
+	require.Equal(t, "", binaryName(ArchUnknown))
+
+	require.Equal(t, "xtensa", archLabel(ArchXtensa))
+	require.Equal(t, "riscv32", archLabel(ArchRiscv32))
+	require.Equal(t, "unknown", archLabel(ArchUnknown))
+
+	require.Equal(t, "xtensa-esp-elf", toolDirName(ArchXtensa))
+	require.Equal(t, "riscv32-esp-elf", toolDirName(ArchRiscv32))
+	require.Equal(t, "", toolDirName(ArchUnknown))
+}
+
 func TestFindToolchain_Xtensa_PathOverride(t *testing.T) {
 	dir := t.TempDir()
 	writeFakeAddr2line(t, dir, "xtensa-esp-elf-addr2line", "")

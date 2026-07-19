@@ -921,6 +921,41 @@ func TestReleaseFlasherImmediateRestartsReader(t *testing.T) {
 	assert.Equal(t, ModeReader, sess.mode)
 }
 
+// TestReleaseFlasherImmediateWaitForPortTimeout covers ReleaseFlasherImmediate's
+// early-return branch when the port never reappears (WaitForPort times out):
+// the session must stay unmodified (not flipped to ModeReader) and the
+// caller gets "" back exactly like a successful-but-unchanged release would,
+// but without ever starting the manager.
+func TestReleaseFlasherImmediateWaitForPortTimeout(t *testing.T) {
+	setupTestPorts(t)
+	setupFastWaitForPort(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	missingPort := "/dev/pogopin-never-reappears"
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:  mgr,
+		port: missingPort,
+		baud: 115200,
+		mode: ModeFlasher,
+	}
+	ports[missingPort] = sess
+	portsMu.Unlock()
+
+	origList := SetListPortsFn(func() ([]serial.PortInfo, error) { return nil, nil })
+	t.Cleanup(func() { SetListPortsFn(origList) })
+
+	newPort := ReleaseFlasherImmediate(sess, missingPort)
+
+	assert.Equal(t, "", newPort)
+	assert.Equal(t, ModeFlasher, sess.mode, "mode must not flip to ModeReader when the port never reappears")
+	assert.False(t, mgr.IsRunning())
+}
+
 // ReleaseFlasherDeferred tests
 
 func TestReleaseFlasherDeferredStartsTimer(t *testing.T) {
@@ -1181,6 +1216,54 @@ func TestReleaseExternalRestartsReader(t *testing.T) {
 
 	assert.Equal(t, "", newPort)
 	assert.Equal(t, ModeReader, sess.mode)
+}
+
+// TestReleaseExternalPortChanged covers ReleaseExternal's re-enumeration
+// branch (foundPort != oldPort): the port map must move the session under
+// its new name and the returned newPort must be non-empty, mirroring
+// ReleaseFlasherImmediate's equivalent branch.
+func TestReleaseExternalPortChanged(t *testing.T) {
+	setupTestPorts(t)
+	setupFastWaitForPort(t)
+
+	mgr := serial.NewManager()
+	mgr.OpenFunc = func(portName string, mode *goSerial.Mode) (goSerial.Port, error) {
+		return &noopPort{}, nil
+	}
+
+	origPort := "/dev/ttyUSB0"
+	portsMu.Lock()
+	sess := &PortSession{
+		mgr:  mgr,
+		port: origPort,
+		baud: 115200,
+		mode: ModeExternal,
+	}
+	ports[origPort] = sess
+	portsMu.Unlock()
+
+	callCount := 0
+	origList := SetListPortsFn(func() ([]serial.PortInfo, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, nil
+		}
+		return []serial.PortInfo{{Name: "/dev/ttyUSB77"}}, nil
+	})
+	t.Cleanup(func() { SetListPortsFn(origList) })
+
+	newPort := ReleaseExternal(sess, origPort)
+
+	assert.Equal(t, "/dev/ttyUSB77", newPort)
+	assert.Equal(t, ModeReader, sess.mode)
+	assert.Equal(t, "/dev/ttyUSB77", sess.port)
+
+	portsMu.Lock()
+	_, stillHasOld := ports[origPort]
+	_, hasNew := ports["/dev/ttyUSB77"]
+	portsMu.Unlock()
+	assert.False(t, stillHasOld)
+	assert.True(t, hasNew)
 }
 
 // Mode transition tests
@@ -2348,4 +2431,29 @@ func TestPortStateFor_SessionIDReflectsResolver(t *testing.T) {
 	ps := portStateFor("/dev/test", sess)
 	assert.Equal(t, "sess-producer", ps.SessionID)
 	assert.Equal(t, os.Getpid(), ps.PID)
+}
+
+// TestModeString covers modeString's full switch, including the
+// no-matching-case "unknown" default branch (an out-of-range PortMode value
+// never occurs on a real session, but the fallback must not panic or
+// mis-render).
+func TestModeString(t *testing.T) {
+	assert.Equal(t, "reader", modeString(ModeReader))
+	assert.Equal(t, "flasher", modeString(ModeFlasher))
+	assert.Equal(t, "external", modeString(ModeExternal))
+	assert.Equal(t, "pending", modeString(ModePending))
+	assert.Equal(t, "unknown", modeString(PortMode(99)))
+}
+
+// TestPortStateFor_LastErrorPopulated covers portStateFor's lastErr branch:
+// when the manager reports a non-nil LastError, PortState.LastError must
+// carry its message (not be left nil).
+func TestPortStateFor_LastErrorPopulated(t *testing.T) {
+	mgr := serial.NewManager()
+	mgr.SetTestState(false, "/dev/test", 115200, fmt.Errorf("device removed"))
+	sess := &PortSession{mgr: mgr, mode: ModeReader}
+
+	ps := portStateFor("/dev/test", sess)
+	require.NotNil(t, ps.LastError)
+	assert.Equal(t, "device removed", *ps.LastError)
 }

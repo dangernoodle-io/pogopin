@@ -22,7 +22,9 @@ make install  # go install .
 
 - `main.go` — thin wrapper, delegates to `internal/cli.Execute`
 - `internal/cli/` — cobra root + CLI subcommands (decode, server, statusline, gpio)
-- `internal/mcpserver/` — MCP server setup, tool registration, handlers
+- `internal/mcpapp/` — shesha composition root: builds the `App` from the capabilities below, wired into `pogo server` via `internal/cli`
+- `internal/capability/{serial,esp,flash,decode}/` — shesha `Capability` implementations: tool registration + handlers for the serial_*/esp_*/flash_external/decode_backtrace tool groups
+- `internal/mcpprogress/` — `notifications/progress` emitter helpers shared by every capability
 - `internal/serial/` — SerialManager, RingBuffer, port I/O
 - `internal/session/` — port session lifecycle (Reader, Flasher, External modes)
 - `internal/esp/` — ESP chip flasher adapter, NVS utilities
@@ -32,7 +34,7 @@ make install  # go install .
 
 ## Tools
 
-Risk is sourced from the `toolRiskClass` registry (`internal/mcpserver/risk.go`, BR-71) — the single source of truth; `internal/mcpserver/tool_risk_doc_test.go` enforces this table stays aligned with it.
+Risk is sourced from each tool's `shesha.Risk` argument at its `shesha.AddTool` call site (scattered across `internal/capability/*`, BR-71) — shesha derives the tool's `ReadOnlyHint`/`DestructiveHint` annotations from it directly, so the live `tools/list` registration is the single source of truth (no hand-maintained risk map to drift). `internal/mcpapp/tool_risk_doc_test.go` enforces this table stays aligned by introspecting a built `App`'s live tool annotations.
 
 <!-- tool-risk-table:start -->
 | Tool | Domain | Risk | Description |
@@ -67,16 +69,17 @@ The plugin also ships a **`board-medic`** subagent (read-mostly hardware diagnos
 
 Tools register in two tiers. The **core tier** (7× `serial_*` + `decode_backtrace`) registers at startup. The **hardware tier** (13× `esp_*` + `flash_external`) registers lazily on the first `serial_list` or `serial_start` call via `notifications/tools/list_changed`. Sessions that only decode crash logs never pay for the ESP tool surface.
 
-`pogo server --diagnostic` (or `POGOPIN_DIAGNOSTIC=1`, either enables it) runs a **diagnostic profile** (BR-72): registers only READ-class tools (per `toolRiskClass` in `internal/mcpserver/risk.go`) — observe-only, no writes, flashing, erase, or session start. Enforcement is server-side (`internal/mcpserver/diagnostic.go`'s `addTool` gate) — a diagnostic client's `tools/list` never contains a non-READ tool, so it can't call one. Inert by default; the hardware-tier unlock (`serial_list`/`serial_start`) still fires since `serial_list` is READ.
+`pogo server --diagnostic` (or `POGOPIN_DIAGNOSTIC=1`, either enables it) runs a **diagnostic profile** (BR-72): registers only ReadOnly-risk tools — observe-only, no writes, flashing, erase, or session start. This is now shesha's own `--read-only` flag (`internal/cli/server.go` ORs it with `POGOPIN_DIAGNOSTIC`), enforced via `app.Gate(shesha.ReadOnlyMode())` before any tool registers — a diagnostic client's `tools/list` never contains a non-ReadOnly tool, so it can't call one. Inert by default; the hardware-tier unlock (`serial_list`/`serial_start`) still fires since `serial_list` is ReadOnly.
 
 Every tool emits `notifications/progress` (start + completion ticks at minimum; multi-phase ops like `esp_read_nvs`/`esp_read_flash`/`esp_reset`/`flash_external` add coarse in-between phase markers) via a transport-neutral `esp.StatusFunc`/`newSequentialStatusEmitter` — no tool is silent for the duration of a call.
 
 ## Dependencies
 
 - `github.com/spf13/cobra` — CLI framework
-- `github.com/mark3labs/mcp-go` — MCP server framework
+- `github.com/dangernoodle-io/shesha` — MCP server framework (composition-root, `Capability`/`mcpx` seam)
 - `go.bug.st/serial` — serial port I/O
 - `tinygo.org/x/espflasher` (via jgangemi/espflasher fork) — ESP flasher, NVS library
+- `github.com/mark3labs/mcp-go` — TEST-ONLY (MC-12): `test/hwbench`'s stdio wire-protocol client; mcpx has no subprocess/command client transport yet
 
 ## Plugin
 

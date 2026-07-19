@@ -16,9 +16,8 @@ var rootCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(decodeCmd)
-	rootCmd.AddCommand(mcpCmd)
-	rootCmd.AddCommand(gpioCmd)
+	rootCmd.AddCommand(diagnosticsCmd)
+	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(statuslineCmd)
 }
 

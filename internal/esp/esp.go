@@ -23,7 +23,7 @@ type StatusFunc func(phase string, current, total int)
 
 // Status phase names emitted through StatusFunc. These are the single
 // source of truth for phase labels — callers that classify or order phases
-// (e.g. internal/mcpserver's nvsPhaseOrdinal) must key off these constants,
+// (e.g. internal/mcpprogress.NVSPhaseOrdinal) must key off these constants,
 // not duplicate string literals, so a new phase added here can't silently
 // fall through an unmatched classification elsewhere.
 const (
@@ -38,8 +38,8 @@ const (
 	StatusPhaseResetting = "resetting"
 	// StatusPhaseCapturingBoot is emitted by callers (e.g. handleReset,
 	// flash_external) around their post-op boot-output capture step. Lives
-	// here, not just in mcpserver, so it's part of the same reusable phase
-	// vocabulary a future CLI adapter can render.
+	// here, not just in a single capability package, so it's part of the
+	// same reusable phase vocabulary a future CLI adapter can render.
 	StatusPhaseCapturingBoot = "capturing boot"
 	// StatusPhaseComplete is a terminal tick emitted at the end of an
 	// orchestration that has no other natural final phase.

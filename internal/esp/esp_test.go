@@ -471,8 +471,13 @@ func TestParseChipTypeAuto(t *testing.T) {
 
 func TestParseChipTypeVariants(t *testing.T) {
 	assert.Equal(t, espflasher.ChipESP32, parseChipType("esp32"))
+	assert.Equal(t, espflasher.ChipESP32S2, parseChipType("esp32s2"))
 	assert.Equal(t, espflasher.ChipESP32S3, parseChipType("ESP32S3"))
+	assert.Equal(t, espflasher.ChipESP32C2, parseChipType("esp32c2"))
+	assert.Equal(t, espflasher.ChipESP32C3, parseChipType("esp32c3"))
+	assert.Equal(t, espflasher.ChipESP32C5, parseChipType("esp32c5"))
 	assert.Equal(t, espflasher.ChipESP32C6, parseChipType("esp32c6"))
+	assert.Equal(t, espflasher.ChipESP32H2, parseChipType("esp32h2"))
 	assert.Equal(t, espflasher.ChipESP32P4Rev1, parseChipType("esp32p4-rev1"))
 	assert.Equal(t, espflasher.ChipESP8266, parseChipType("ESP8266"))
 }
@@ -1623,4 +1628,14 @@ func TestFlashESPPrefersInFlightPartitionTable(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, mock.flashImagesCalled)
 	assert.Equal(t, len(newPartitionTableData)+8, result.BytesWritten)
+}
+
+// TestDefaultFlasherFactoryNoHardware exercises the real (non-mock) factory
+// against a port name that cannot exist, so espflasher.New fails opening
+// the serial port -- pins the pass-through wiring (port/opts forwarded,
+// error propagated) without requiring real hardware.
+func TestDefaultFlasherFactoryNoHardware(t *testing.T) {
+	flasher, err := DefaultFlasherFactory("/dev/nonexistent-pogopin-test-port", nil)
+	require.Error(t, err)
+	assert.Nil(t, flasher)
 }
