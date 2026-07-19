@@ -62,7 +62,7 @@ func TestStatuslineParity_IdleAlwaysMode(t *testing.T) {
 	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
 	run("")
 
-	assert.Equal(t, "serial: idle\n", out.String())
+	assert.Equal(t, "pogopin: idle\n", out.String())
 }
 
 func TestStatuslineParity_IdleQuietMode(t *testing.T) {
@@ -94,7 +94,7 @@ func TestStatuslineParity_SinglePort(t *testing.T) {
 	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
 	run(`{"session_id":"sess-x"}`)
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 42L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 42L\n", out.String())
 }
 
 func TestStatuslineParity_MultiplePortsJoined(t *testing.T) {
@@ -113,7 +113,7 @@ func TestStatuslineParity_MultiplePortsJoined(t *testing.T) {
 	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
 	run(`{"session_id":"sess-x"}`)
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 5L | serial: ttyACM0@921600 flasher 0L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 5L | ttyACM0@921600 flasher 0L\n", out.String())
 }
 
 func TestStatuslineColor_SinglePortHasEscapes(t *testing.T) {
@@ -194,7 +194,7 @@ func TestStatuslineProvider_ModeResolution(t *testing.T) {
 			require.NoError(t, err)
 			if tc.wantIdle {
 				require.Len(t, segs, 1)
-				assert.Equal(t, "serial: idle", segs[0].Text)
+				assert.Equal(t, "pogopin: idle", segs[0].Text)
 			} else {
 				assert.Empty(t, segs)
 			}
@@ -208,15 +208,108 @@ func TestStatuslineProvider_NoSessionRendersIdleNotOtherSessionPorts(t *testing.
 	defer status.SetStatusDir(prev)
 	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
 
+	// sessionID == "" and no live ports at all -> ReadAllLivePorts is empty -> idle text.
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "")
+	require.NoError(t, err)
+	require.Len(t, segs, 1)
+	assert.Equal(t, "pogopin: idle", segs[0].Text)
+}
+
+// TestStatuslineProvider_NoSessionFlagsOtherSessionPortsUnknown is the
+// BR-92 follow-up successor to the old "unresolved own session sees
+// nothing" case: with foreign detection ON (the default) and no resolved
+// sessionID, we can't prove ANY port is or isn't ours, so a port carrying a
+// real session id renders as "unknown" (yellow "?") rather than being
+// red-flagged foreign (which would falsely claim we know it isn't ours) or
+// silently dropped.
+func TestStatuslineProvider_NoSessionFlagsOtherSessionPortsUnknown(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
 	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
 		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 3, PID: os.Getpid(), SessionID: "sess-x"},
 	})
 
-	// sessionID == "" -> ReadLivePorts renders nothing -> idle text (ModeAlways default).
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "")
+	require.NoError(t, err)
+	require.Len(t, segs, 2)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, "? ttyUSB0", segs[1].Text)
+	assert.Equal(t, colorUnknown, segs[1].Color)
+}
+
+// TestStatuslineProvider_NoSessionMultipleUnknownPorts proves more than one
+// port renders as its own "unknown" group when the own sessionID is
+// unresolved, joined by " | ", each yellow "?".
+func TestStatuslineProvider_NoSessionMultipleUnknownPorts(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, 88893, []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 3, PID: os.Getpid(), SessionID: "sess-a"},
+	})
+	writeStatusFileFor(t, tmpDir, 88894, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-b"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "")
+	require.NoError(t, err)
+	require.Len(t, segs, 4)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, colorUnknown, segs[1].Color)
+	assert.Equal(t, " | ", segs[2].Text)
+	assert.Equal(t, colorUnknown, segs[3].Color)
+	for _, s := range segs {
+		assert.NotContains(t, s.Text, foreignWarnGlyph)
+	}
+}
+
+// TestStatuslineProvider_EmptyPortSkipped proves a port with an empty Port
+// path is skipped entirely — guards filepath.Base("") == "." from ever
+// leaking into a rendered "⚠ ."/"? ." segment.
+func TestStatuslineProvider_EmptyPortSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, 88895, []status.PortState{
+		{Port: "", Baud: 115200, Mode: "reader", BufferLines: 3, PID: os.Getpid(), SessionID: "sess-other"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	require.Len(t, segs, 1)
+	assert.Equal(t, "pogopin: idle", segs[0].Text)
+}
+
+// TestStatuslineProvider_NoSessionToggleOffStillRendersNothing proves the
+// pre-BR-92 fail-safe still holds when the indicator is disabled: an
+// unresolved sessionID renders nothing (idle, ModeAlways) rather than
+// leaking another session's ports, matching ReadLivePorts's own "" ->
+// empty-slice contract.
+func TestStatuslineProvider_NoSessionToggleOffStillRendersNothing(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "off")
+
+	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 3, PID: os.Getpid(), SessionID: "sess-x"},
+	})
+
 	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "")
 	require.NoError(t, err)
 	require.Len(t, segs, 1)
-	assert.Equal(t, "serial: idle", segs[0].Text)
+	assert.Equal(t, "pogopin: idle", segs[0].Text)
 }
 
 func TestStatuslineCmd_RegisteredOnRoot(t *testing.T) {
@@ -246,7 +339,7 @@ func TestStatuslineCmd_SessionIDPrecedence(t *testing.T) {
 	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
 	run(`{"session_id":"sess-stdin"}`)
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 3L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 3L\n", out.String())
 }
 
 // TestStatuslineCmd_StdinSessionIDBeatsClaudeEnv isolates tier2 > tier3 of
@@ -269,7 +362,7 @@ func TestStatuslineCmd_StdinSessionIDBeatsClaudeEnv(t *testing.T) {
 	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
 	run(`{"session_id":"sess-stdin"}`)
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 3L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 3L\n", out.String())
 }
 
 // TestStatuslineCmd_ProductionConstructionRendersColor sources the
@@ -330,7 +423,7 @@ func TestStatuslineCmd_ProductionConstructionPlainFlagStillPlain(t *testing.T) {
 	cmd.SetArgs([]string{"--plain"})
 	require.NoError(t, cmd.Execute())
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 42L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 42L\n", out.String())
 }
 
 // TestExecute_StatuslineSubcommandProductionWiring drives the package-level
@@ -367,5 +460,186 @@ func TestExecute_StatuslineSubcommandProductionWiring(t *testing.T) {
 
 	require.NoError(t, Execute())
 
-	assert.Equal(t, "serial: ttyUSB0@115200 reader 7L\n", out.String())
+	assert.Equal(t, "pogopin: ttyUSB0@115200 reader 7L\n", out.String())
+}
+
+// TestStatuslineProvider_ForeignOnly covers BR-92: a foreign-session port
+// with no own ports renders as a single red warning group, no baud/mode/
+// line-count detail.
+func TestStatuslineProvider_ForeignOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, 88888, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-other"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	require.Len(t, segs, 2)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, "⚠ ttyACM0", segs[1].Text)
+	assert.Equal(t, colorForeign, segs[1].Color)
+}
+
+// TestStatuslineProvider_OwnAndForeignOrdering proves foreign groups render
+// before own groups, joined by " | ", and that own rendering is unchanged
+// (identity/mode/line-count segments, no warning glyph or foreign color).
+func TestStatuslineProvider_OwnAndForeignOrdering(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 5, PID: os.Getpid(), SessionID: "sess-x"},
+	})
+	writeStatusFileFor(t, tmpDir, 88889, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-other"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	require.Len(t, segs, 8)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, "⚠ ttyACM0", segs[1].Text)
+	assert.Equal(t, colorForeign, segs[1].Color)
+	assert.Equal(t, " | ", segs[2].Text)
+	assert.Equal(t, "ttyUSB0@115200", segs[3].Text)
+	assert.Equal(t, colorPortIdentity, segs[3].Color)
+	assert.Equal(t, "5L", segs[7].Text)
+}
+
+// TestStatuslineProvider_MultiForeign covers more than one foreign session's
+// ports, each rendered as its own warning group joined by " | ".
+func TestStatuslineProvider_MultiForeign(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, 88888, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-a"},
+	})
+	writeStatusFileFor(t, tmpDir, 88889, []status.PortState{
+		{Port: "/dev/ttyUSB1", Baud: 115200, Mode: "reader", BufferLines: 1, PID: os.Getpid(), SessionID: "sess-b"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	require.Len(t, segs, 4)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, colorForeign, segs[1].Color)
+	assert.Equal(t, " | ", segs[2].Text)
+	assert.Equal(t, colorForeign, segs[3].Color)
+}
+
+// TestStatuslineProvider_EmptySessionIDSkipped proves a port with no
+// SessionID (older/standalone caller) is neither foreign nor own — dropped
+// entirely, never rendered and never red-flagged.
+func TestStatuslineProvider_EmptySessionIDSkipped(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 5, PID: os.Getpid(), SessionID: "sess-x"},
+	})
+	writeStatusFileFor(t, tmpDir, 88890, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid()},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	// prefix + own group only (5 segments) -- the SessionID-less entry never appears.
+	require.Len(t, segs, 6)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, "ttyUSB0@115200", segs[1].Text)
+	for _, s := range segs {
+		assert.NotContains(t, s.Text, "ttyACM0")
+	}
+}
+
+// TestStatuslineProvider_ForeignToggleOff proves
+// POGOPIN_STATUSLINE_FOREIGN=off suppresses the foreign indicator entirely,
+// falling back to own-only rendering (still under the "pogopin: " label).
+func TestStatuslineProvider_ForeignToggleOff(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "off")
+
+	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 5, PID: os.Getpid(), SessionID: "sess-x"},
+	})
+	writeStatusFileFor(t, tmpDir, 88891, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-other"},
+	})
+
+	segs, err := statuslineProvider{}.Statusline(context.Background(), statusline.Payload{}, "sess-x")
+	require.NoError(t, err)
+	require.Len(t, segs, 6)
+	assert.Equal(t, "pogopin: ", segs[0].Text)
+	assert.Equal(t, "ttyUSB0@115200", segs[1].Text)
+	for _, s := range segs {
+		assert.NotContains(t, s.Text, "ttyACM0")
+		assert.NotContains(t, s.Text, foreignWarnGlyph)
+	}
+}
+
+// TestForeignIndicatorEnabled exercises the POGOPIN_STATUSLINE_FOREIGN
+// parser directly: default-on, case-insensitive falsey values disable it,
+// anything else leaves it on.
+func TestForeignIndicatorEnabled(t *testing.T) {
+	cases := []struct {
+		env  string
+		want bool
+	}{
+		{"", true},
+		{"on", true},
+		{"garbage", true},
+		{"off", false},
+		{"OFF", false},
+		{"0", false},
+		{"false", false},
+		{"FALSE", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("POGOPIN_STATUSLINE_FOREIGN", tc.env)
+			assert.Equal(t, tc.want, foreignIndicatorEnabled())
+		})
+	}
+}
+
+// TestStatuslineCmd_OwnAndForeignByteParity is the byte-level companion to
+// TestStatuslineProvider_OwnAndForeignOrdering: proves the plain-rendered
+// (LevelNone) concatenated output matches the expected "pogopin: ⚠ <foreign>
+// | <own>" shape.
+func TestStatuslineCmd_OwnAndForeignByteParity(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := status.SetStatusDir(tmpDir)
+	defer status.SetStatusDir(prev)
+	t.Setenv("POGOPIN_STATUSLINE_MODE", "")
+	t.Setenv("POGOPIN_STATUSLINE_FOREIGN", "")
+
+	writeStatusFileFor(t, tmpDir, os.Getpid(), []status.PortState{
+		{Port: "/dev/ttyUSB0", Baud: 115200, Mode: "reader", BufferLines: 5, PID: os.Getpid(), SessionID: "sess-x"},
+	})
+	writeStatusFileFor(t, tmpDir, 88892, []status.PortState{
+		{Port: "/dev/ttyACM0", Baud: 921600, Mode: "flasher", BufferLines: 9, PID: os.Getpid(), SessionID: "sess-other"},
+	})
+
+	out, run := runStatuslineCmd(t, statusline.WithAppPrefix("POGOPIN"), statusline.WithForceLevel(style.LevelNone))
+	run(`{"session_id":"sess-x"}`)
+
+	assert.Equal(t, "pogopin: ⚠ ttyACM0 | ttyUSB0@115200 reader 5L\n", out.String())
 }
