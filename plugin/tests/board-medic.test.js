@@ -5,9 +5,12 @@ const path = require('path');
 
 const agentPath = path.join(__dirname, '..', 'agents', 'board-medic.md');
 const skillPath = path.join(__dirname, '..', 'skills', 'diagnose', 'SKILL.md');
-const espToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'esp_tools.go');
-const serialToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'serial_tools.go');
-const decodeToolsPath = path.join(__dirname, '..', '..', 'internal', 'mcpserver', 'decode_tools.go');
+// MC-12: tool registration moved from internal/mcpserver/*_tools.go onto the
+// shesha capability stack (internal/capability/{esp,flash,decode,serial}/).
+const espToolsPath = path.join(__dirname, '..', '..', 'internal', 'capability', 'esp', 'esp.go');
+const flashToolsPath = path.join(__dirname, '..', '..', 'internal', 'capability', 'flash', 'flash.go');
+const decodeToolsPath = path.join(__dirname, '..', '..', 'internal', 'capability', 'decode', 'decode.go');
+const serialToolsPath = path.join(__dirname, '..', '..', 'internal', 'capability', 'serial', 'serial.go');
 
 function parseFrontmatter(md) {
   const match = md.match(/^---\n([\s\S]*?)\n---/);
@@ -40,16 +43,16 @@ test('board-medic agent allowlist references only registered pogopin tools', () 
   const pogoPrefix = 'mcp__plugin_pogopin-mcp_pogopin__';
   const referenced = tools.filter(t => t.startsWith(pogoPrefix)).map(t => t.slice(pogoPrefix.length));
 
-  const sources = [espToolsPath, serialToolsPath, decodeToolsPath]
+  const sources = [espToolsPath, flashToolsPath, decodeToolsPath, serialToolsPath]
     .map(p => fs.readFileSync(p, 'utf8'))
     .join('\n');
 
   for (const name of referenced) {
-    // Accept either registration form: direct mcp.NewTool(...) or the newTool(...) wrapper.
-    const registered = new RegExp(`(?:mcp\\.NewTool|newTool)\\("${name}"`).test(sources);
+    // MC-12: tools register via shesha.AddTool(r, &mcpx.Tool{Name: "...", ...}, ...).
+    const registered = new RegExp(`Name:\\s*"${name}"`).test(sources);
     assert.ok(
       registered,
-      `agent references tool "${name}" but no mcp.NewTool("${name}",...) or newTool("${name}",...) found in *_tools.go`
+      `agent references tool "${name}" but no shesha.AddTool(&mcpx.Tool{Name: "${name}", ...}) found in internal/capability/*/`
     );
   }
 });

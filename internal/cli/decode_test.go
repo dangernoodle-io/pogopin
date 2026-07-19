@@ -43,6 +43,30 @@ func TestReadPanicInput(t *testing.T) {
 	})
 }
 
+// TestReadPanicInputStdinPipe covers readPanicInput's neither-flag-set
+// stdin path: it redirects os.Stdin to an os.Pipe (which reports as a pipe,
+// not a character device, satisfying the isTerminal check) and confirms the
+// piped content is read back. Not run in parallel with siblings — os.Stdin
+// is process-global.
+func TestReadPanicInputStdinPipe(t *testing.T) {
+	origStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdin = r
+
+	const piped = "Backtrace: 0xdeadbeef:0x3ffb1234"
+	go func() {
+		_, _ = w.WriteString(piped)
+		_ = w.Close()
+	}()
+
+	got, err := readPanicInput("", "")
+	require.NoError(t, err)
+	require.Equal(t, piped, got)
+}
+
 func TestPrintFrames(t *testing.T) {
 	t.Parallel()
 

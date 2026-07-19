@@ -22,6 +22,24 @@ func TestDefaultDir(t *testing.T) {
 	}
 }
 
+// TestDefaultDir_FallsBackToTempDirOnUserCacheDirError covers DefaultDir's
+// os.UserCacheDir error branch: with HOME (and XDG_CACHE_HOME, its Linux
+// fallback) unset, os.UserCacheDir fails and DefaultDir must fall back to
+// os.TempDir()/pogopin/status rather than propagating the error.
+func TestDefaultDir_FallsBackToTempDirOnUserCacheDirError(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("XDG_CACHE_HOME", "")
+
+	if _, err := os.UserCacheDir(); err == nil {
+		t.Skip("os.UserCacheDir() unexpectedly succeeded with HOME/XDG_CACHE_HOME unset on this platform")
+	}
+
+	want := filepath.Join(os.TempDir(), "pogopin", "status")
+	if got := DefaultDir(); got != want {
+		t.Errorf("DefaultDir() = %s, want %s", got, want)
+	}
+}
+
 func TestSetStatusDir_RoundTrip(t *testing.T) {
 	prev := statusDir
 	defer func() { statusDir = prev }()
@@ -767,6 +785,13 @@ func TestPidAlive(t *testing.T) {
 	}
 	if pidAlive(999999) {
 		t.Error("pidAlive(999999) should be false (near-certainly dead)")
+	}
+	// pid 1 (init) always exists but is very unlikely to be owned by the
+	// test process, so this exercises pidAlive's EPERM branch (or, if the
+	// test runs as root, its ESRCH-free success branch) -- either way the
+	// live process must report alive.
+	if !pidAlive(1) {
+		t.Error("pidAlive(1) should be true (init/launchd is always running)")
 	}
 }
 

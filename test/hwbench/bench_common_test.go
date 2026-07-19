@@ -7,6 +7,14 @@
 // its scenarios directly from here — runGPIOScenarios, runSecurityInfoScenario,
 // and runChipIdentityScenario hold the shared subtests, called by both
 // TestHWBench and TestMockBench.
+//
+// MC-12: this package still spawns the pogo binary as a subprocess and
+// drives it with mark3labs/mcp-go's stdio client (client.NewStdioMCPClientWithOptions)
+// rather than mcpx's own client — mcpx has no subprocess/command client
+// transport yet. github.com/mark3labs/mcp-go is now a TEST-ONLY dependency
+// kept solely for this package; production (the `pogo` binary itself) no
+// longer imports it. Porting hwbench onto an mcpx-native command-transport
+// client is a follow-up once that transport exists.
 package hwbench
 
 import (

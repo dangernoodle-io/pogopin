@@ -24,7 +24,7 @@ mock-bench:
 	ACC_POGOPIN=1 go test ./test/hwbench/ -run TestMockBench -v -timeout 300s
 
 mcp-mock:
-	ACC_POGOPIN=1 go test ./internal/mcpserver/ -run TestMock -v -timeout 120s
+	ACC_POGOPIN=1 go test ./internal/mcpapp/ -run TestMock -v -timeout 120s
 
 acc: mock-bench mcp-mock
 

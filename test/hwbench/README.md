@@ -104,7 +104,7 @@ asserts for the `c3`/`s3dongle` board profiles (`boardProfile.SecurityChipID`).
 
 Untagged (no `hwtest` build tag) — the mock server binary is built
 separately with the `mock` build tag (see `internal/mockhw`'s package doc
-and `mcpserver.maybeEnableMock`), independent of this test binary's own
+and `mcpapp.maybeEnableMock`), independent of this test binary's own
 tags. Gated on `ACC_POGOPIN` (mirrors `TF_ACC`) so it skips in a plain `go
 test ./...` run.
 
@@ -115,8 +115,8 @@ go test ./...
 # hardware-free mock bench
 make mock-bench
 
-# hardware-free in-process mcpserver integration test
-# (TestMockGPIOInProcess, internal/mcpserver/mock_integration_test.go)
+# hardware-free in-process mcpapp integration test
+# (TestMockGPIOInProcess, internal/mcpapp/mock_integration_test.go)
 make mcp-mock
 
 # both, in one shot — the CI mock-bench job runs this
@@ -132,7 +132,7 @@ make acc
 | `ACC_POGOPIN_BIN` | no | — | Path to a pre-built `-tags mock` `pogo` binary. Unset = build one from the repo root with the `mock` tag. |
 
 `TestMockGPIOInProcess` and `TestMockSerialMonitorInProcess`
-(`internal/mcpserver/mock_integration_test.go`) are sibling tests in a
+(`internal/mcpapp/mock_integration_test.go`) are sibling tests in a
 different package — in-process tests (no subprocess) that drive the real
 MCP tool handlers directly against the virtual chip, exercising the actual
 espflasher/session (GPIO) and session/serial.Manager (monitor) code paths
