@@ -78,9 +78,29 @@ test('install.sh no longer exists in plugin/scripts', () => {
   assert.ok(!fs.existsSync(installShPath), 'plugin/scripts/install.sh should have been removed');
 });
 
-test('hooks.json UserPromptSubmit[0].hooks[0].command contains context.sh', () => {
+test('hooks.json UserPromptSubmit[0].hooks[0].command contains claude hooks user-prompt-submit', () => {
   const content = fs.readFileSync(hooksJsonPath, 'utf8');
   const parsed = JSON.parse(content);
   const command = parsed.hooks.UserPromptSubmit[0].hooks[0].command;
-  assert.ok(command.includes('context.sh'), `expected command to contain context.sh, got ${command}`);
+  assert.ok(
+    command.includes('claude hooks user-prompt-submit'),
+    `expected command to contain "claude hooks user-prompt-submit", got ${command}`
+  );
+});
+
+test('hooks.json PreToolUse[0].hooks[0].command contains claude hooks pre-tool-use', () => {
+  const content = fs.readFileSync(hooksJsonPath, 'utf8');
+  const parsed = JSON.parse(content);
+  const command = parsed.hooks.PreToolUse[0].hooks[0].command;
+  assert.ok(
+    command.includes('claude hooks pre-tool-use'),
+    `expected command to contain "claude hooks pre-tool-use", got ${command}`
+  );
+});
+
+test('hooks.json PreToolUse[0].matcher stays mcp__plugin_pogopin-mcp_pogopin__.*', () => {
+  const content = fs.readFileSync(hooksJsonPath, 'utf8');
+  const parsed = JSON.parse(content);
+  const matcher = parsed.hooks.PreToolUse[0].matcher;
+  assert.equal(matcher, 'mcp__plugin_pogopin-mcp_pogopin__.*');
 });

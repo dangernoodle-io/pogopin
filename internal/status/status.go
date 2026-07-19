@@ -257,6 +257,16 @@ func ReadLivePorts(sessionID string, mode Mode) ([]PortState, error) {
 	return filtered, nil
 }
 
+// ReadAllLivePorts returns the live, UNFILTERED merged port view across
+// every session (BR-87): unlike ReadLivePorts, which filters to one caller's
+// sessionID and therefore can't see another session's ports, this is the
+// right primitive for cross-session conflict detection, where the caller
+// needs the full merged view plus its own same-session comparison. Reuses
+// mergeLivePorts — no duplicated glob/parse/staleness logic.
+func ReadAllLivePorts(mode Mode) []PortState {
+	return mergeLivePorts(mode.maxAge())
+}
+
 // filePID derives the owning PID for a status file: prefer a PortState.PID
 // value if present, otherwise fall back to the filename stem.
 func filePID(name string, sf StatusFile) int {
