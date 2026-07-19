@@ -19,6 +19,7 @@ func init() {
 	rootCmd.AddCommand(diagnosticsCmd)
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(statuslineCmd)
+	mustMountProviders(rootCmd, claudeProvider())
 }
 
 // Execute runs the root command.

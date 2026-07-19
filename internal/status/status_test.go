@@ -538,6 +538,53 @@ func TestMergeLivePorts_MissingDirReturnsNil(t *testing.T) {
 	}
 }
 
+func TestReadAllLivePorts_ReturnsAllSessionsUnfiltered(t *testing.T) {
+	tmpDir := t.TempDir()
+	prev := SetStatusDir(tmpDir)
+	defer SetStatusDir(prev)
+
+	// Two ports, two different sessions, one file (mirrors two ports owned
+	// by the same server process).
+	writeFileFor(t, tmpDir, os.Getpid(), []PortState{
+		{Port: "/dev/ttyUSB0", Running: true, PID: os.Getpid(), SessionID: "sess-a"},
+		{Port: "/dev/ttyUSB1", Running: true, PID: os.Getpid(), SessionID: "sess-b"},
+	}, time.Now())
+
+	ports := ReadAllLivePorts(ModeAlways)
+	if len(ports) != 2 {
+		t.Fatalf("expected 2 unfiltered ports, got %d: %v", len(ports), ports)
+	}
+
+	// Contrast: ReadLivePorts("", ...) sees none (empty sessionID renders
+	// nothing); ReadLivePorts("sess-a", ...) sees only its own session's
+	// port. ReadAllLivePorts is the only reader that sees both.
+	filteredEmpty, err := ReadLivePorts("", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filteredEmpty) != 0 {
+		t.Fatalf("expected ReadLivePorts(\"\", ...) to render nothing, got %d", len(filteredEmpty))
+	}
+
+	filteredA, err := ReadLivePorts("sess-a", ModeAlways)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(filteredA) != 1 {
+		t.Fatalf("expected ReadLivePorts(\"sess-a\", ...) to see only its own port, got %d", len(filteredA))
+	}
+}
+
+func TestReadAllLivePorts_MissingDirReturnsNil(t *testing.T) {
+	prev := SetStatusDir(filepath.Join(t.TempDir(), "does-not-exist"))
+	defer SetStatusDir(prev)
+
+	ports := ReadAllLivePorts(ModeAlways)
+	if len(ports) != 0 {
+		t.Fatalf("expected 0 ports for missing dir, got %d: %v", len(ports), ports)
+	}
+}
+
 func TestReadLivePorts_EmptySessionIDRendersNothing(t *testing.T) {
 	tmpDir := t.TempDir()
 	prev := SetStatusDir(tmpDir)

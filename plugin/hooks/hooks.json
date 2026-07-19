@@ -4,12 +4,12 @@
       { "hooks": [ { "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/self-heal.js" } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "bash ${CLAUDE_PLUGIN_ROOT}/scripts/context.sh" } ] }
+      { "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_DATA}/bin/pogo claude hooks user-prompt-submit" } ] }
     ],
     "PreToolUse": [
       {
         "matcher": "mcp__plugin_pogopin-mcp_pogopin__.*",
-        "hooks": [ { "type": "command", "command": "node ${CLAUDE_PLUGIN_ROOT}/scripts/pre-tool-port-check.js" } ]
+        "hooks": [ { "type": "command", "command": "${CLAUDE_PLUGIN_DATA}/bin/pogo claude hooks pre-tool-use" } ]
       }
     ]
   }
