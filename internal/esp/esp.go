@@ -465,6 +465,11 @@ func GetSecurityInfo(factory FlasherFactory, port string, baudRate int, resetMod
 	flashOpts := espflasher.DefaultOptions()
 	flashOpts.BaudRate = baudRate
 	flashOpts.ResetMode = parseResetMode(resetMode)
+	// GET_SECURITY_INFO is a ROM-bootloader-only command; the stub loader
+	// doesn't implement it. Every esp_info section opens its own fresh
+	// Flasher, and connect() uploads the stub by default, so without this
+	// the command always fails once a stub is present.
+	flashOpts.SkipStub = true
 
 	f, err := factory(port, flashOpts)
 	if err != nil {
@@ -474,6 +479,18 @@ func GetSecurityInfo(factory FlasherFactory, port string, baudRate int, resetMod
 		f.Reset()
 		_ = f.Close()
 	}()
+
+	// Neither the original ESP32 (Xtensa LX6) nor ESP8266 ROM implements
+	// GET_SECURITY_INFO at all — the command starts at ESP32-S2, and
+	// espflasher has no ESP8266 handling for it either. Even with the stub
+	// skipped, calling it on either chip fails; surface a clear, actionable
+	// error instead of the flasher's generic command-failure message.
+	// eFuse-register-based secure-boot/flash-encryption reporting for these
+	// chips is not yet implemented (BR-90 part 2).
+	switch f.ChipType() {
+	case espflasher.ChipESP32, espflasher.ChipESP8266:
+		return SecurityInfoResult{}, fmt.Errorf("GET_SECURITY_INFO is not supported on %s: the ROM bootloader only implements this command starting with ESP32-S2; eFuse-register-based secure-boot/flash-encryption reporting for this chip is not yet implemented", f.ChipName())
+	}
 
 	info, err := f.GetSecurityInfo()
 	if err != nil {

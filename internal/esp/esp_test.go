@@ -697,6 +697,7 @@ func TestGetSecurityInfoSuccess(t *testing.T) {
 	chipID := uint32(0x12345678)
 	apiVer := uint32(0x00000001)
 	mock := &mockFlasher{
+		chipTypVal: espflasher.ChipESP32S3,
 		getSecurityInfoVal: &espflasher.SecurityInfo{
 			Flags:         0x12345678,
 			FlashCryptCnt: 5,
@@ -721,6 +722,7 @@ func TestGetSecurityInfoSuccess(t *testing.T) {
 func TestGetSecurityInfoBaudDefault(t *testing.T) {
 	var capturedOpts *espflasher.FlasherOptions
 	mock := &mockFlasher{
+		chipTypVal:         espflasher.ChipESP32S3,
 		getSecurityInfoVal: &espflasher.SecurityInfo{},
 	}
 	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
@@ -733,8 +735,72 @@ func TestGetSecurityInfoBaudDefault(t *testing.T) {
 	assert.Equal(t, 115200, capturedOpts.BaudRate)
 }
 
+// TestGetSecurityInfoSkipsStub verifies GetSecurityInfo requests a
+// ROM-only connect (SkipStub=true). GET_SECURITY_INFO is a
+// ROM-bootloader-only command; the stub loader doesn't implement it, and
+// every esp_info section opens a fresh Flasher whose connect() uploads the
+// stub by default unless told otherwise.
+func TestGetSecurityInfoSkipsStub(t *testing.T) {
+	var capturedOpts *espflasher.FlasherOptions
+	mock := &mockFlasher{
+		chipTypVal:         espflasher.ChipESP32S3,
+		getSecurityInfoVal: &espflasher.SecurityInfo{},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		capturedOpts = opts
+		return mock, nil
+	}
+
+	_, err := GetSecurityInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.NoError(t, err)
+	require.NotNil(t, capturedOpts)
+	assert.True(t, capturedOpts.SkipStub, "GetSecurityInfo must skip the stub so GET_SECURITY_INFO reaches the ROM bootloader")
+}
+
+// TestGetSecurityInfoClassicESP32Unsupported verifies that on the original
+// ESP32 — whose ROM never implemented GET_SECURITY_INFO (the command starts
+// at ESP32-S2) — GetSecurityInfo returns a clear, actionable error instead
+// of attempting the unsupported command.
+func TestGetSecurityInfoClassicESP32Unsupported(t *testing.T) {
+	mock := &mockFlasher{
+		chipTypVal:         espflasher.ChipESP32,
+		chipNameVal:        "ESP32",
+		getSecurityInfoVal: &espflasher.SecurityInfo{},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err := GetSecurityInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported on ESP32")
+	assert.Contains(t, err.Error(), "ESP32-S2")
+}
+
+// TestGetSecurityInfoESP8266Unsupported verifies that on ESP8266 — which
+// predates GET_SECURITY_INFO even more than the original ESP32, and which
+// espflasher has no special handling for — GetSecurityInfo returns the same
+// clear, actionable error instead of the flasher's generic ROM-failure
+// message.
+func TestGetSecurityInfoESP8266Unsupported(t *testing.T) {
+	mock := &mockFlasher{
+		chipTypVal:         espflasher.ChipESP8266,
+		chipNameVal:        "ESP8266",
+		getSecurityInfoVal: &espflasher.SecurityInfo{},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	_, err := GetSecurityInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported on ESP8266")
+	assert.Contains(t, err.Error(), "ESP32-S2")
+}
+
 func TestGetSecurityInfoError(t *testing.T) {
 	mock := &mockFlasher{
+		chipTypVal:         espflasher.ChipESP32S3,
 		getSecurityInfoErr: os.ErrPermission,
 	}
 	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {

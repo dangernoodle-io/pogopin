@@ -169,7 +169,7 @@ func TestHandleESPInfoSecuritySuccess(t *testing.T) {
 	testutil.SetupTestPorts(t)
 	testutil.SetupTestFlasherFactory(t)
 
-	mock := &testutil.MockFlasher{GetSecurityInfoVal: &espflasher.SecurityInfo{}}
+	mock := &testutil.MockFlasher{ChipTypeVal: espflasher.ChipESP32S3, GetSecurityInfoVal: &espflasher.SecurityInfo{}}
 	setFlasher(t, mock)
 
 	h := newHarness(t)
@@ -185,6 +185,51 @@ func TestHandleESPInfoSecuritySuccess(t *testing.T) {
 	assert.True(t, ok, "security section not found in response")
 	_, ok = info["chip"]
 	assert.False(t, ok, "chip section must be absent when include=security only")
+}
+
+// TestHandleESPInfoSecurityClassicESP32Unsupported verifies the esp_info
+// security path surfaces GetSecurityInfo's clear classic-ESP32 error
+// end-to-end rather than the flasher's generic command-failure text.
+func TestHandleESPInfoSecurityClassicESP32Unsupported(t *testing.T) {
+	testutil.SetupTestPorts(t)
+	testutil.SetupTestFlasherFactory(t)
+
+	mock := &testutil.MockFlasher{
+		ChipTypeVal: espflasher.ChipESP32,
+		ChipNameVal: "ESP32",
+	}
+	setFlasher(t, mock)
+
+	h := newHarness(t)
+	result, err := h.CallTool(context.Background(), "esp_info", map[string]any{
+		"port": "/dev/ttyUSB0", "include": "security",
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, testkit.ResultText(result), "not supported on ESP32")
+}
+
+// TestHandleESPInfoSecurityESP8266Unsupported verifies the esp_info security
+// path surfaces GetSecurityInfo's clear ESP8266 error end-to-end — ESP8266
+// predates GET_SECURITY_INFO even more than the original ESP32, and
+// espflasher has no special handling for it either.
+func TestHandleESPInfoSecurityESP8266Unsupported(t *testing.T) {
+	testutil.SetupTestPorts(t)
+	testutil.SetupTestFlasherFactory(t)
+
+	mock := &testutil.MockFlasher{
+		ChipTypeVal: espflasher.ChipESP8266,
+		ChipNameVal: "ESP8266",
+	}
+	setFlasher(t, mock)
+
+	h := newHarness(t)
+	result, err := h.CallTool(context.Background(), "esp_info", map[string]any{
+		"port": "/dev/ttyUSB0", "include": "security",
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+	assert.Contains(t, testkit.ResultText(result), "not supported on ESP8266")
 }
 
 func TestHandleESPInfoError(t *testing.T) {
