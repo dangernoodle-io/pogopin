@@ -144,8 +144,8 @@ func TestHandleESPInfoChipSuccess(t *testing.T) {
 
 	mock := &testutil.MockFlasher{
 		ChipNameVal: "ESP32-S3",
-		FlashIDMfg:  0x20,
-		FlashIDDev:  0x0060,
+		FlashIDMfg:  0xEF,
+		FlashIDDev:  0x4018, // memory type 0x40, capacity byte 0x18 -> 16MB
 	}
 	setFlasher(t, mock)
 
@@ -161,8 +161,9 @@ func TestHandleESPInfoChipSuccess(t *testing.T) {
 	chipData, ok := info["chip"].(map[string]any)
 	require.True(t, ok, "chip section not found in response")
 	assert.Equal(t, "ESP32-S3", chipData["chip_name"])
-	assert.Equal(t, float64(0x20), chipData["manufacturer_id"])
-	assert.Equal(t, float64(0x0060), chipData["device_id"])
+	assert.Equal(t, float64(0xEF), chipData["manufacturer_id"])
+	assert.Equal(t, float64(0x4018), chipData["device_id"])
+	assert.Equal(t, "16MB", chipData["flash_size"])
 }
 
 func TestHandleESPInfoSecuritySuccess(t *testing.T) {

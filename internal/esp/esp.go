@@ -131,6 +131,11 @@ type ChipInfoResult struct {
 	ChipName       string `json:"chip_name"`
 	ManufacturerID uint8  `json:"manufacturer_id"`
 	DeviceID       uint16 `json:"device_id"`
+	// FlashSize is a human-readable rendering ("4MB", "16MB") of the JEDEC
+	// capacity byte packed into the low byte of DeviceID. Empty when the
+	// capacity byte is unknown/unreported (0) or outside the plausible
+	// JEDEC range (decodeFlashSize's overflow guard).
+	FlashSize string `json:"flash_size,omitempty"`
 }
 
 // RegisterResult contains a register read result with hex formatting.
@@ -349,6 +354,36 @@ func EraseESP(factory FlasherFactory, port string, opts EraseOptions, progress e
 	return err
 }
 
+// decodeFlashSize renders a JEDEC RDID capacity byte (esptool.py convention:
+// size_bytes = 1 << capacityByte) as a human-readable size string ("4MB",
+// "16MB"). Returns "" for a zero/unrecognized capacity byte so the result
+// serializes cleanly via ChipInfoResult's `omitempty`. Pure — no Flasher —
+// so it's trivially host-testable.
+func decodeFlashSize(capacityByte uint8) string {
+	if capacityByte == 0 || capacityByte >= 63 {
+		return ""
+	}
+
+	sizeBytes := uint64(1) << capacityByte
+
+	const (
+		kb = 1024
+		mb = 1024 * kb
+		gb = 1024 * mb
+	)
+
+	switch {
+	case sizeBytes >= gb:
+		return fmt.Sprintf("%dGB", sizeBytes/gb)
+	case sizeBytes >= mb:
+		return fmt.Sprintf("%dMB", sizeBytes/mb)
+	case sizeBytes >= kb:
+		return fmt.Sprintf("%dKB", sizeBytes/kb)
+	default:
+		return fmt.Sprintf("%dB", sizeBytes)
+	}
+}
+
 // GetChipInfo retrieves chip information from an ESP device.
 func GetChipInfo(factory FlasherFactory, port string, baudRate int, resetMode string) (ChipInfoResult, error) {
 	if baudRate == 0 {
@@ -374,10 +409,17 @@ func GetChipInfo(factory FlasherFactory, port string, baudRate int, resetMode st
 		return ChipInfoResult{}, err
 	}
 
+	// FlashID packs the JEDEC RDID capacity byte (byte2 of the raw response)
+	// into the low byte of DeviceID (see tinygo.org/x/espflasher's FlashID:
+	// devID = capacity | (memoryType << 8)) — reuse it rather than a second
+	// flasher round-trip.
+	capacityByte := uint8(devID & 0xFF)
+
 	return ChipInfoResult{
 		ChipName:       f.ChipName(),
 		ManufacturerID: mfgID,
 		DeviceID:       devID,
+		FlashSize:      decodeFlashSize(capacityByte),
 	}, nil
 }
 

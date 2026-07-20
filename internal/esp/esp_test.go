@@ -403,6 +403,66 @@ func TestGetChipInfoSuccess(t *testing.T) {
 	assert.True(t, mock.closeCalled)
 }
 
+func TestGetChipInfoFlashSize(t *testing.T) {
+	// devID low byte = JEDEC capacity byte (see FlashID doc); high byte =
+	// memory type and doesn't affect FlashSize decoding.
+	mock := &mockFlasher{
+		chipTypVal:  espflasher.ChipESP32S3,
+		chipNameVal: "ESP32-S3",
+		flashIDMfg:  0xEF,
+		flashIDDev:  0x4018, // memory type 0x40, capacity byte 0x18 -> 16MB
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	result, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, "16MB", result.FlashSize)
+}
+
+func TestGetChipInfoFlashSizeUnknownCapacity(t *testing.T) {
+	mock := &mockFlasher{
+		chipTypVal:  espflasher.ChipESP32S3,
+		chipNameVal: "ESP32-S3",
+		flashIDMfg:  0xEF,
+		flashIDDev:  0x4000, // capacity byte 0x00 -> unknown
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	result, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, "", result.FlashSize)
+}
+
+func TestDecodeFlashSize(t *testing.T) {
+	tests := []struct {
+		name         string
+		capacityByte uint8
+		want         string
+	}{
+		{"unknown zero", 0x00, ""},
+		{"1MB", 0x14, "1MB"},
+		{"2MB", 0x15, "2MB"},
+		{"4MB", 0x16, "4MB"},
+		{"8MB", 0x17, "8MB"},
+		{"16MB", 0x18, "16MB"},
+		{"32MB", 0x19, "32MB"},
+		{"512KB", 0x13, "512KB"},
+		{"1GB", 0x1E, "1GB"},
+		{"2B", 0x01, "2B"},
+		{"overflow guard", 0xFF, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, decodeFlashSize(tt.capacityByte))
+		})
+	}
+}
+
 func TestGetChipInfoBaudDefault(t *testing.T) {
 	var capturedOpts *espflasher.FlasherOptions
 	mock := &mockFlasher{
