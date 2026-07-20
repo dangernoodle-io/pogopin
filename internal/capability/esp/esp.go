@@ -335,7 +335,7 @@ func (c Capability) Attach(r *shesha.Registrar) error {
 
 	shesha.AddTool(r, &mcpx.Tool{
 		Name:        "esp_info",
-		Description: "Get ESP device info. Returns chip info by default (chip_type, revision, flash_id, flash_size). Pass include=security for secure boot/flash encryption status, or include=chip,security for both.",
+		Description: "Get ESP device info. Returns chip info by default (chip_name, manufacturer_id, device_id, flash_size). Pass include=security for secure boot/flash encryption status, or include=chip,security for both.",
 	}, shesha.ReadOnly, handleESPInfo, shesha.Group(hardwareGroup))
 
 	shesha.AddTool(r, &mcpx.Tool{
