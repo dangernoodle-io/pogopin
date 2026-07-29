@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -51,6 +52,15 @@ func (m *gpioMockFlasher) ReadFlash(offset, size uint32, progress espflasher.Pro
 	return nil, nil
 }
 func (m *gpioMockFlasher) FlushInput() {}
+func (m *gpioMockFlasher) MAC() (net.HardwareAddr, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read MAC"}
+}
+func (m *gpioMockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return espflasher.ChipRevision{}, &espflasher.UnsupportedCommandError{Command: "read chip revision"}
+}
+func (m *gpioMockFlasher) ChipFeatures() ([]string, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read chip features"}
+}
 
 func (m *gpioMockFlasher) ReadGPIO(pin int) (bool, error) {
 	return m.readGPIOVal, m.readGPIOErr

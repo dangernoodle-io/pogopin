@@ -10,6 +10,7 @@
 package testutil
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,17 @@ type MockFlasher struct {
 	SetGPIOCalls     []GPIOCall
 	ReleaseGPIOCalls []int
 	GPIOReservedFunc func(pin int) (bool, string)
+
+	// MACVal/MACErr, ChipRevisionVal/ChipRevisionErr, and
+	// ChipFeaturesVal/ChipFeaturesErr drive GetChipInfo's eFuse reads
+	// (E1-19). Set an *Err field (e.g. to an *espflasher.UnsupportedCommandError)
+	// to exercise the fail-open path.
+	MACVal          net.HardwareAddr
+	MACErr          error
+	ChipRevisionVal espflasher.ChipRevision
+	ChipRevisionErr error
+	ChipFeaturesVal []string
+	ChipFeaturesErr error
 }
 
 func (m *MockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -234,6 +246,18 @@ func (m *MockFlasher) GPIOReserved(pin int) (bool, string) {
 		return m.GPIOReservedFunc(pin)
 	}
 	return false, ""
+}
+
+func (m *MockFlasher) MAC() (net.HardwareAddr, error) {
+	return m.MACVal, m.MACErr
+}
+
+func (m *MockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return m.ChipRevisionVal, m.ChipRevisionErr
+}
+
+func (m *MockFlasher) ChipFeatures() ([]string, error) {
+	return m.ChipFeaturesVal, m.ChipFeaturesErr
 }
 
 // SetupTestPorts sets up an empty ports map for testing.

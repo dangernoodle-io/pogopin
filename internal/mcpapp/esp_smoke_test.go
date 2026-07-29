@@ -2,6 +2,7 @@ package mcpapp
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"github.com/dangernoodle-io/shesha/testkit"
@@ -55,6 +56,15 @@ func (m *smokeMockFlasher) ReadFlash(offset, size uint32, progress espflasher.Pr
 	return nil, nil
 }
 func (m *smokeMockFlasher) FlushInput() {}
+func (m *smokeMockFlasher) MAC() (net.HardwareAddr, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read MAC"}
+}
+func (m *smokeMockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return espflasher.ChipRevision{}, &espflasher.UnsupportedCommandError{Command: "read chip revision"}
+}
+func (m *smokeMockFlasher) ChipFeatures() ([]string, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read chip features"}
+}
 
 // setupSmokeFlasherFactory swaps in a fast sync-retry delay for the
 // duration of the test, mirroring internal/mcpserver/helpers_test.go's

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"net"
 	"time"
 
 	goSerial "go.bug.st/serial"
@@ -88,6 +89,12 @@ type mockFlasher struct {
 	flashMD5Val         string
 	readFlashErr        error
 	readFlashVal        []byte
+	macVal              net.HardwareAddr
+	macErr              error
+	chipRevisionVal     espflasher.ChipRevision
+	chipRevisionErr     error
+	chipFeaturesVal     []string
+	chipFeaturesErr     error
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -171,4 +178,16 @@ func (m *mockFlasher) ReleaseGPIO(pin int) error {
 
 func (m *mockFlasher) GPIOReserved(pin int) (bool, string) {
 	return false, ""
+}
+
+func (m *mockFlasher) MAC() (net.HardwareAddr, error) {
+	return m.macVal, m.macErr
+}
+
+func (m *mockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return m.chipRevisionVal, m.chipRevisionErr
+}
+
+func (m *mockFlasher) ChipFeatures() ([]string, error) {
+	return m.chipFeaturesVal, m.chipFeaturesErr
 }
