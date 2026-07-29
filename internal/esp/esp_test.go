@@ -2,7 +2,9 @@ package esp
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 
@@ -61,6 +63,13 @@ type mockFlasher struct {
 	// just-flashed data. Lets tests simulate a device whose post-write state
 	// doesn't match what was written (verify-failure paths).
 	readFlashPostWriteOverride []byte
+
+	macVal          net.HardwareAddr
+	macErr          error
+	chipRevisionVal espflasher.ChipRevision
+	chipRevisionErr error
+	chipFeaturesVal []string
+	chipFeaturesErr error
 }
 
 func (m *mockFlasher) FlashImages(images []espflasher.ImagePart, progress espflasher.ProgressFunc) error {
@@ -175,6 +184,18 @@ func (m *mockFlasher) GPIOReserved(pin int) (bool, string) {
 		return m.gpioReservedFunc(pin)
 	}
 	return false, ""
+}
+
+func (m *mockFlasher) MAC() (net.HardwareAddr, error) {
+	return m.macVal, m.macErr
+}
+
+func (m *mockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return m.chipRevisionVal, m.chipRevisionErr
+}
+
+func (m *mockFlasher) ChipFeatures() ([]string, error) {
+	return m.chipFeaturesVal, m.chipFeaturesErr
 }
 
 func TestFlashESPSuccess(t *testing.T) {
@@ -476,6 +497,89 @@ func TestGetChipInfoBaudDefault(t *testing.T) {
 	_, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
 	require.NoError(t, err)
 	assert.Equal(t, 115200, capturedOpts.BaudRate)
+}
+
+func TestGetChipInfoChipIdentity(t *testing.T) {
+	mac := net.HardwareAddr{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01}
+	mock := &mockFlasher{
+		chipNameVal:     "ESP32-S3",
+		macVal:          mac,
+		chipRevisionVal: espflasher.ChipRevision{Major: 1, Minor: 2},
+		chipFeaturesVal: []string{"WiFi", "BLE"},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	result, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, "de:ad:be:ef:00:01", result.MAC)
+	assert.Equal(t, "v1.2", result.ChipRevision)
+	assert.Equal(t, []string{"WiFi", "BLE"}, result.Features)
+}
+
+func TestGetChipInfoChipIdentityUnsupportedFailOpen(t *testing.T) {
+	mock := &mockFlasher{
+		chipNameVal: "ESP8266",
+		macErr:      &espflasher.UnsupportedCommandError{Command: "read MAC"},
+		chipRevisionErr: &espflasher.UnsupportedCommandError{
+			Command: "read chip revision",
+		},
+		chipFeaturesErr: &espflasher.UnsupportedCommandError{Command: "read chip features"},
+	}
+	factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	result, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, "ESP8266", result.ChipName)
+	assert.Empty(t, result.MAC)
+	assert.Empty(t, result.ChipRevision)
+	assert.Empty(t, result.Features)
+}
+
+// TestGetChipInfoChipIdentityNonUnsupportedErrorPropagates confirms a
+// genuine read failure (not "chip unsupported") aborts GetChipInfo entirely,
+// matching FlashID's error-propagation precedent — fail-open is reserved
+// for *espflasher.UnsupportedCommandError only. Covers all three readers
+// (MAC, ChipRevision, ChipFeatures) since each has its own propagation
+// branch in GetChipInfo.
+func TestGetChipInfoChipIdentityNonUnsupportedErrorPropagates(t *testing.T) {
+	tests := []struct {
+		name      string
+		mock      *mockFlasher
+		wantInErr string
+	}{
+		{
+			name:      "MAC",
+			mock:      &mockFlasher{chipNameVal: "ESP32-S3", macErr: errors.New("boom: serial read timeout")},
+			wantInErr: "read MAC",
+		},
+		{
+			name:      "ChipRevision",
+			mock:      &mockFlasher{chipNameVal: "ESP32-S3", chipRevisionErr: errors.New("boom: serial read timeout")},
+			wantInErr: "read chip revision",
+		},
+		{
+			name:      "ChipFeatures",
+			mock:      &mockFlasher{chipNameVal: "ESP32-S3", chipFeaturesErr: errors.New("boom: serial read timeout")},
+			wantInErr: "read chip features",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := func(port string, opts *espflasher.FlasherOptions) (Flasher, error) {
+				return tt.mock, nil
+			}
+
+			_, err := GetChipInfo(factory, "/dev/ttyUSB0", 0, "")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantInErr)
+			assert.Contains(t, err.Error(), "boom")
+		})
+	}
 }
 
 func TestGetChipInfoFlashIDError(t *testing.T) {

@@ -2,7 +2,9 @@ package esp
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -96,6 +98,9 @@ type Flasher interface {
 	GetFlashMD5(offset, size uint32, progress espflasher.ProgressFunc) (string, error)
 	ReadFlash(offset, size uint32, progress espflasher.ProgressFunc) ([]byte, error)
 	FlushInput()
+	MAC() (net.HardwareAddr, error)
+	ChipRevision() (espflasher.ChipRevision, error)
+	ChipFeatures() ([]string, error)
 }
 
 // DefaultFlasherFactory creates a real espflasher.
@@ -136,6 +141,14 @@ type ChipInfoResult struct {
 	// capacity byte is unknown/unreported (0) or outside the plausible
 	// JEDEC range (decodeFlashSize's overflow guard).
 	FlashSize string `json:"flash_size,omitempty"`
+	// MAC, ChipRevision, and Features are read via eFuse REG_READ (E1-19).
+	// Populated fail-open ONLY for an unsupported chip (e.g. ESP8266, which
+	// espflasher reports via *espflasher.UnsupportedCommandError) — that case
+	// just leaves the field empty. Any other read error fails the whole
+	// esp_info call (see GetChipInfo).
+	MAC          string   `json:"mac,omitempty"`
+	ChipRevision string   `json:"chip_revision,omitempty"`
+	Features     []string `json:"features,omitempty"`
 }
 
 // RegisterResult contains a register read result with hex formatting.
@@ -415,12 +428,39 @@ func GetChipInfo(factory FlasherFactory, port string, baudRate int, resetMode st
 	// flasher round-trip.
 	capacityByte := uint8(devID & 0xFF)
 
-	return ChipInfoResult{
+	result := ChipInfoResult{
 		ChipName:       f.ChipName(),
 		ManufacturerID: mfgID,
 		DeviceID:       devID,
 		FlashSize:      decodeFlashSize(capacityByte),
-	}, nil
+	}
+
+	// MAC/ChipRevision/ChipFeatures are eFuse REG_READ-based (E1-19) and work
+	// against both the ROM bootloader and the stub, so they populate
+	// regardless of reset mode — including no_reset, closing the BR-90
+	// partial-info gap for that mode. Fail-open is narrow and specific: only
+	// *espflasher.UnsupportedCommandError (an unsupported chip, e.g. ESP8266)
+	// leaves the corresponding field empty. Any other error (transient serial
+	// I/O, timeout, corrupted response) propagates and aborts the call,
+	// matching the FlashID precedent above.
+	var unsupported *espflasher.UnsupportedCommandError
+	if mac, err := f.MAC(); err == nil {
+		result.MAC = mac.String()
+	} else if !errors.As(err, &unsupported) {
+		return ChipInfoResult{}, fmt.Errorf("read MAC: %w", err)
+	}
+	if rev, err := f.ChipRevision(); err == nil {
+		result.ChipRevision = rev.String()
+	} else if !errors.As(err, &unsupported) {
+		return ChipInfoResult{}, fmt.Errorf("read chip revision: %w", err)
+	}
+	if feats, err := f.ChipFeatures(); err == nil {
+		result.Features = feats
+	} else if !errors.As(err, &unsupported) {
+		return ChipInfoResult{}, fmt.Errorf("read chip features: %w", err)
+	}
+
+	return result, nil
 }
 
 // ReadRegister reads a 32-bit register from an ESP chip.

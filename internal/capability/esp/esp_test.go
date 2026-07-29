@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"testing"
 
@@ -143,9 +144,12 @@ func TestHandleESPInfoChipSuccess(t *testing.T) {
 	testutil.SetupTestFlasherFactory(t)
 
 	mock := &testutil.MockFlasher{
-		ChipNameVal: "ESP32-S3",
-		FlashIDMfg:  0xEF,
-		FlashIDDev:  0x4018, // memory type 0x40, capacity byte 0x18 -> 16MB
+		ChipNameVal:     "ESP32-S3",
+		FlashIDMfg:      0xEF,
+		FlashIDDev:      0x4018, // memory type 0x40, capacity byte 0x18 -> 16MB
+		MACVal:          net.HardwareAddr{0xde, 0xad, 0xbe, 0xef, 0x00, 0x01},
+		ChipRevisionVal: espflasher.ChipRevision{Major: 1, Minor: 2},
+		ChipFeaturesVal: []string{"WiFi", "BLE"},
 	}
 	setFlasher(t, mock)
 
@@ -164,6 +168,9 @@ func TestHandleESPInfoChipSuccess(t *testing.T) {
 	assert.Equal(t, float64(0xEF), chipData["manufacturer_id"])
 	assert.Equal(t, float64(0x4018), chipData["device_id"])
 	assert.Equal(t, "16MB", chipData["flash_size"])
+	assert.Equal(t, "de:ad:be:ef:00:01", chipData["mac"])
+	assert.Equal(t, "v1.2", chipData["chip_revision"])
+	assert.Equal(t, []any{"WiFi", "BLE"}, chipData["features"])
 }
 
 func TestHandleESPInfoSecuritySuccess(t *testing.T) {

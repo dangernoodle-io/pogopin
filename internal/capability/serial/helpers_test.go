@@ -1,6 +1,7 @@
 package serial
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -104,3 +105,12 @@ func (m *resetMockFlasher) ReadFlash(offset, size uint32, progress espflasher.Pr
 	return nil, nil
 }
 func (m *resetMockFlasher) FlushInput() {}
+func (m *resetMockFlasher) MAC() (net.HardwareAddr, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read MAC"}
+}
+func (m *resetMockFlasher) ChipRevision() (espflasher.ChipRevision, error) {
+	return espflasher.ChipRevision{}, &espflasher.UnsupportedCommandError{Command: "read chip revision"}
+}
+func (m *resetMockFlasher) ChipFeatures() ([]string, error) {
+	return nil, &espflasher.UnsupportedCommandError{Command: "read chip features"}
+}
