@@ -1600,6 +1600,92 @@ func TestVerifyLosslessParseDetectsUnaccountedSlot(t *testing.T) {
 	assert.Contains(t, err.Error(), "lossy")
 }
 
+// TestNVSSetBatchInsufficientPagesReturnsErrorNotPanic reproduces the
+// reported esp_nvs_set panic ("slice bounds out of range [:28672] with
+// capacity 24576") on a stock 6-page (0x6000) NVS partition: the device
+// already has 6 distinct namespaces (nvs.GenerateNVS gives every namespace
+// its own page, so 6 namespaces already exactly fill 6 pages), and the
+// requested update targets a brand-new 7th namespace that does not yet
+// exist on the device — mirroring the reported repro's non-existent
+// bb_mqtt namespace. Before the espflasher fix this panicked instead of
+// returning a clean error; the tool-layer recover() should never be the
+// only thing standing between a legitimate RMW request and a crash.
+func TestNVSSetBatchInsufficientPagesReturnsErrorNotPanic(t *testing.T) {
+	var existingEntries []nvs.Entry
+	for i := 0; i < 6; i++ {
+		existingEntries = append(existingEntries, nvs.Entry{
+			Namespace: fmt.Sprintf("ns%d", i), Key: "k", Type: "u8", Value: uint8(i),
+		})
+	}
+	existingData, err := nvs.GenerateNVS(existingEntries, nvs.DefaultPartSize)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{readFlashVal: existingData}
+	//nolint:unparam // conforms to FlasherFactory's required signature (same shape used unflagged throughout this file); the error return is part of the interface, not dead code
+	factory := func(_ string, _ *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	updates := []NVSUpdate{
+		{Namespace: "bb_mqtt", Key: "enabled", Type: "string", Value: "1"},
+	}
+
+	require.NotPanics(t, func() {
+		_, err = NVSSetBatch(factory, "/dev/ttyUSB0", updates, 0x9000, uint32(nvs.DefaultPartSize), 0, "", nil)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not enough pages")
+	assert.False(t, mock.flashImagesCalled, "must not flash when the replacement image doesn't fit the partition")
+}
+
+// TestNVSDeleteInsufficientPagesReturnsErrorNotPanic covers the BR-97 entry
+// point (esp_nvs_delete) for the SAME shared root cause as
+// TestNVSSetBatchInsufficientPagesReturnsErrorNotPanic: both NVSSetBatch and
+// NVSDelete regenerate the partition through the identical
+// nvs.GenerateNVS/writePage path. A real ESP-IDF-written partition can pack
+// multiple namespaces onto one physical page (denser than
+// nvs.GenerateNVS's one-page-per-namespace layout), so a device can
+// legitimately hold more distinct namespaces than nvs.GenerateNVS can fit
+// back into the same page count. Simulated here with a 7-namespace,
+// 7-page raw image served by the mock as the "pre-write read" — larger
+// than the real (caller-supplied) 6-page partition size passed to
+// NVSDelete, exactly as a densely-packed real device would exceed our
+// codec's less efficient regeneration. Deleting a single key (not an
+// entire namespace) still leaves 7 distinct namespaces to regenerate,
+// which doesn't fit in 6 pages.
+func TestNVSDeleteInsufficientPagesReturnsErrorNotPanic(t *testing.T) {
+	var existingEntries []nvs.Entry
+	for i := 0; i < 7; i++ {
+		ns := fmt.Sprintf("ns%d", i)
+		existingEntries = append(existingEntries, nvs.Entry{
+			Namespace: ns, Key: "k", Type: "u8", Value: uint8(i),
+		})
+		// A second key in ns0 so deleting "k" below doesn't also delete the
+		// namespace itself — the regenerated partition must still need all
+		// 7 distinct namespaces, not 6.
+		if i == 0 {
+			existingEntries = append(existingEntries, nvs.Entry{
+				Namespace: ns, Key: "k2", Type: "u8", Value: uint8(99),
+			})
+		}
+	}
+	existingData, err := nvs.GenerateNVS(existingEntries, nvs.PageSize*7)
+	require.NoError(t, err)
+
+	mock := &mockFlasher{readFlashVal: existingData}
+	//nolint:unparam // conforms to FlasherFactory's required signature (same shape used unflagged throughout this file); the error return is part of the interface, not dead code
+	factory := func(_ string, _ *espflasher.FlasherOptions) (Flasher, error) {
+		return mock, nil
+	}
+
+	require.NotPanics(t, func() {
+		_, err = NVSDelete(factory, "/dev/ttyUSB0", "ns0", "k", 0x9000, uint32(nvs.DefaultPartSize), 115200, "", nil)
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not enough pages")
+	assert.False(t, mock.flashImagesCalled, "must not flash when the replacement image doesn't fit the partition")
+}
+
 func TestNVSSetBatchAbortsOnLossyParse(t *testing.T) {
 	entries := []nvs.Entry{
 		{Namespace: "test", Key: "k1", Type: "u32", Value: uint32(42)},
