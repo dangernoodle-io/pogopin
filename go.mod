@@ -12,6 +12,17 @@ require (
 	tinygo.org/x/espflasher v0.8.0
 )
 
+// TEMPORARY replace — DO NOT let this outlive its purpose (BR-97).
+// Points at the jgangemi/espflasher fork (public), branch
+// jae/nvs-writepage-insufficient-pages, commit d4c80b5, carrying a
+// writePage() bounds-check fix for "slice bounds out of range" panics
+// on esp_nvs_set/esp_nvs_delete, submitted upstream as
+// tinygo-org/espflasher#61 but not yet merged or tagged.
+// Removal condition: once tinygo-org/espflasher#61 merges and a release
+// tag containing the writePage guard exists, delete this replace line
+// and bump the `tinygo.org/x/espflasher` require to that tagged version.
+replace tinygo.org/x/espflasher => github.com/jgangemi/espflasher v0.0.0-20260809015630-d4c80b561746
+
 require (
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
